@@ -331,28 +331,36 @@ with tab3:
     else:
         df = pd.DataFrame(data.data)
         
-        # --- CÔNG CỤ 1: DỌN DẸP TỰ ĐỘNG ---
+       # --- CÔNG CỤ 1: DỌN DẸP TRÙNG LẶP (LOGIC MỚI: AN TOÀN TUYỆT ĐỐI) ---
         with st.expander("🧹 Công cụ dọn trùng lặp (Auto Cleaner)", expanded=False):
-            st.write("Giữ lại thông tin mới nhất của mỗi nhân vật, xóa các dòng cũ thừa thãi.")
+            st.write("Chỉ xóa những dòng GIỐNG Y HỆT nhau (Cùng tên & Cùng mô tả). Giữ lại các thông tin khác nhau.")
             if st.button("Chạy dọn dẹp ngay", type="primary"):
-                with st.spinner("Đang quét..."):
-                    unique_entities = {}
+                with st.spinner("Đang soi từng chữ..."):
+                    seen_content = set() # Tập hợp chứa các nội dung đã gặp
                     ids_to_delete = []
+                    
                     for item in data.data:
+                        # Tạo một cái "dấu vân tay" cho dòng dữ liệu
+                        # Kết hợp Tên + Mô tả (viết thường, bỏ khoảng trắng thừa)
                         name = item['entity_name'].lower().strip()
-                        if name in unique_entities:
+                        desc = item['description'].lower().strip()
+                        
+                        # Dấu vân tay duy nhất
+                        unique_key = f"{name}|||{desc}"
+                        
+                        if unique_key in seen_content:
+                            # Nếu đã từng thấy nội dung y hệt thế này rồi -> XÓA thằng cũ hơn (do list đã sort DESC)
                             ids_to_delete.append(item['id'])
                         else:
-                            unique_entities[name] = item['id']
+                            # Nếu chưa thấy -> Lưu lại vào bộ nhớ
+                            seen_content.add(unique_key)
                     
                     if ids_to_delete:
-                        # Chia nhỏ lệnh xóa nếu quá nhiều (Supabase giới hạn request url)
-                        # Ở đây xóa đơn giản
                         supabase.table("story_bible").delete().in_("id", ids_to_delete).execute()
-                        st.success(f"Đã xóa {len(ids_to_delete)} dòng trùng!")
+                        st.success(f"Đã dọn sạch {len(ids_to_delete)} dòng copy y chang nhau!")
                         st.rerun()
                     else:
-                        st.info("Dữ liệu sạch, không có gì để xóa.")
+                        st.info("Dữ liệu sạch bong! Không có dòng nào trùng lặp hoàn toàn.")
 
         st.divider()
 
@@ -391,4 +399,5 @@ with tab3:
             use_container_width=True,
             height=600
         )
+
 
