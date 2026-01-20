@@ -168,7 +168,7 @@ with tab1:
                 st.warning("Viết gì đi đã cha nội!")
             else:
                 with st.spinner("V đang đọc, lục lại trí nhớ và soi mói..."):
-                    related_context = smart_search(content[:1000], story_id)
+                    related_context = smart_search(content[:1000], story_id, current_chap=chap_num)
                     
                     final_prompt = f"""
                     THÔNG TIN BỐI CẢNH TÌM ĐƯỢC TỪ QUÁ KHỨ:
@@ -177,15 +177,45 @@ with tab1:
                     NỘI DUNG CHƯƠNG {chap_num} CẦN REVIEW:
                     {content}
                     """
-                    # Giữ nguyên model của ông
-                    model_review = genai.GenerativeModel('gemini-3-pro-preview', system_instruction=REVIEW_PROMPT)
-                    review_res = model_review.generate_content(final_prompt)
                     
-                    model_extract = genai.GenerativeModel('gemini-3-pro-preview', system_instruction=EXTRACTOR_PROMPT)
-                    extract_res = model_extract.generate_content(content)
+                    # --- 1. CẤU HÌNH "THÁO XÍCH" AN TOÀN ---
+                    # Bắt buộc phải có cái này, không là viết truyện tình cảm tí là nó chặn
+                    safe_config = [
+                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                    ]
                     
-                    st.session_state['temp_review'] = review_res.text
-                    st.session_state['temp_bible'] = extract_res.text
+                    # --- 2. GỌI REVIEW (CÓ BẮT LỖI) ---
+                    try:
+                        # Thêm safety_settings vào đây
+                        review_res = model_review.generate_content(final_prompt, safety_settings=safe_config)
+                        
+                        # Kiểm tra xem nó có trả lời không trước khi lấy .text
+                        if review_res.text:
+                            st.session_state['temp_review'] = review_res.text
+                    except ValueError:
+                        # Nếu bị chặn, hiện thông báo khéo léo thay vì sập web
+                        st.error("🚫 V từ chối review chương này!")
+                        st.warning("Lý do: Bộ lọc an toàn của Google quá nhạy cảm với từ ngữ trong bài (Safety Filter).")
+                        # Mẹo: In ra lý do chặn để ông biết đường sửa
+                        if review_res.prompt_feedback:
+                            st.caption(f"Chi tiết chặn: {review_res.prompt_feedback}")
+                        st.stop()
+                    except Exception as e:
+                        st.error(f"Lỗi lạ: {e}")
+                        st.stop()
+
+                    # --- 3. GỌI BIBLE EXTRACT (Dùng Flash cho rẻ & nhanh) ---
+                    try:
+                        # Cũng phải tháo xích cho thằng Extract luôn
+                        model_extract = genai.GenerativeModel('gemini-3-flash-preview', system_instruction=EXTRACTOR_PROMPT)
+                        extract_res = model_extract.generate_content(content, safety_settings=safe_config)
+                        st.session_state['temp_bible'] = extract_res.text
+                    except:
+                        st.session_state['temp_bible'] = "[]" # Nếu lỗi thì trả về rỗng để không sập
+
                     st.session_state['temp_content'] = content
                     st.session_state['temp_chap'] = chap_num
                     st.rerun()
@@ -361,3 +391,4 @@ with tab3:
             use_container_width=True,
             height=600
         )
+
