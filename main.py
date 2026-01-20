@@ -222,9 +222,9 @@ with tab1:
                     try:
                         # --- GỌI GEMINI 3 VỚI STREAMING ---
                         # (Lưu ý: Tôi giữ nguyên tên model ông yêu cầu)
-                        model_review = genai.GenerativeModel('gemini-1.5-pro', system_instruction=REVIEW_PROMPT)
+                        model_review = genai.GenerativeModel('gemini-3-pro-preview', system_instruction=REVIEW_PROMPT)
                         # Nếu ông có quyền dùng Gemini 3 thật thì đổi dòng trên thành:
-                        # model_review = genai.GenerativeModel('gemini-2.0-flash-thinking-exp-01-21', system_instruction=REVIEW_PROMPT)
+                        # model_review = genai.GenerativeModel('gemini-3-flash-thinking-exp-01-21', system_instruction=REVIEW_PROMPT)
 
                         response_stream = model_review.generate_content(
                             final_prompt, 
@@ -255,7 +255,7 @@ with tab1:
 
                     # --- GỌI EXTRACT (Chạy ngầm sau khi Stream xong) ---
                     try:
-                        model_extract = genai.GenerativeModel('gemini-1.5-flash', system_instruction=EXTRACTOR_PROMPT)
+                        model_extract = genai.GenerativeModel('gemini-3-flash-preview', system_instruction=EXTRACTOR_PROMPT)
                         extract_res = model_extract.generate_content(
                             content, 
                             safety_settings=safe_config,
@@ -488,5 +488,6 @@ with tab3:
 
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
 
 
