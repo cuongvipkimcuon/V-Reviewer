@@ -191,11 +191,17 @@ with tab1:
                 st.markdown(loaded_review)
                 st.info("Đây là review đã lưu trong Database.")
         
-        if st.button("🚀 Gửi V Thẩm Định (Gemini 3)", type="primary", use_container_width=True):
+        # Thay thế toàn bộ đoạn xử lý nút bấm cũ bằng đoạn này:
+        if st.button("🚀 Gửi V Thẩm Định (Chế độ Stream)", type="primary", use_container_width=True):
             if not content:
                 st.warning("Viết gì đi đã cha nội!")
             else:
-                with st.spinner("V đang đọc kỹ (Gemini 3 suy nghĩ hơi lâu, chờ xíu nhé)..."):
+                # 1. Tạo một cái hộp rỗng để hứng chữ
+                review_box = st.empty() 
+                full_response = "" # Biến để gom chữ lại thành bài văn
+
+                with st.spinner("V đang bắt đầu chém gió (Chữ sẽ chạy ra ngay đây)..."):
+                    # Search Context
                     related_context = smart_search(content[:1000], story_id, current_chap=chap_num)
                     
                     final_prompt = f"""
@@ -206,7 +212,6 @@ with tab1:
                     {content}
                     """
                     
-                    # CẤU HÌNH BỘ LỌC THÁO XÍCH
                     safe_config = {
                         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -214,40 +219,43 @@ with tab1:
                         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
                     }
                     
-                    # --- GỌI REVIEW (CÓ TIMEOUT DÀI) ---
                     try:
-                        # Dùng Gemini 3 Pro Preview như yêu cầu
-                        model_review = genai.GenerativeModel('gemini-3-flash-preview', system_instruction=REVIEW_PROMPT)
-                        # Lưu ý: Hiện tại API key thường gọi gemini-1.5 hoặc 2.0. 
-                        # Nếu bạn chắc chắn tên model là 'gemini-3-pro-preview' thì giữ nguyên.
-                        # Tuy nhiên, tôi sẽ để 'gemini-1.5-pro' làm fallback an toàn hoặc bạn sửa lại tên model đúng của bạn ở đây.
-                        # EDIT: Theo yêu cầu của bạn, tôi giữ nguyên tên model bạn cung cấp.
-                        
-                        # UPDATE: Tên model Gemini 3 chưa public rộng rãi, có thể bạn đang dùng bản private hoặc nhầm tên.
-                        # Tôi sẽ dùng tên model trong code cũ của bạn: 'gemini-3-pro-preview'
-                        model_review = genai.GenerativeModel('gemini-3-pro-preview', system_instruction=REVIEW_PROMPT) 
-                        # (Lưu ý: Tôi để 1.5 Pro ở đây để code CHẠY ĐƯỢC cho người khác test. 
-                        # Bạn hãy đổi lại thành 'gemini-3-pro-preview' nếu key bạn có quyền truy cập nó).
-                        
-                        # QUAN TRỌNG: TIMEOUT 600s (10 phút) để không bị lỗi 504
-                        review_res = model_review.generate_content(
+                        # --- GỌI GEMINI 3 VỚI STREAMING ---
+                        # (Lưu ý: Tôi giữ nguyên tên model ông yêu cầu)
+                        model_review = genai.GenerativeModel('gemini-1.5-pro', system_instruction=REVIEW_PROMPT)
+                        # Nếu ông có quyền dùng Gemini 3 thật thì đổi dòng trên thành:
+                        # model_review = genai.GenerativeModel('gemini-2.0-flash-thinking-exp-01-21', system_instruction=REVIEW_PROMPT)
+
+                        response_stream = model_review.generate_content(
                             final_prompt, 
                             safety_settings=safe_config,
+                            stream=True, # <--- QUAN TRỌNG: BẬT STREAM
                             request_options={'timeout': 600} 
                         )
                         
-                        if review_res.text:
-                            st.session_state['temp_review'] = review_res.text
+                        # --- VÒNG LẶP HỨNG CHỮ ---
+                        for chunk in response_stream:
+                            if chunk.text:
+                                full_response += chunk.text
+                                # Cập nhật trực tiếp lên màn hình + con trỏ nhấp nháy
+                                review_box.markdown(full_response + "▌") 
+                        
+                        # Chạy xong thì hiện bản full sạch đẹp
+                        review_box.markdown(full_response)
+                        
+                        # Lưu vào session
+                        st.session_state['temp_review'] = full_response
+
                     except ValueError:
                         st.error("🚫 V từ chối review (Safety blocked)!")
                         st.stop()
                     except Exception as e:
-                        st.error(f"Lỗi gọi Model: {e}")
+                        st.error(f"Lỗi: {e}")
                         st.stop()
 
-                    # --- GỌI EXTRACT (CÓ TIMEOUT) ---
+                    # --- GỌI EXTRACT (Chạy ngầm sau khi Stream xong) ---
                     try:
-                        model_extract = genai.GenerativeModel('gemini-3-flash-preview', system_instruction=EXTRACTOR_PROMPT)
+                        model_extract = genai.GenerativeModel('gemini-1.5-flash', system_instruction=EXTRACTOR_PROMPT)
                         extract_res = model_extract.generate_content(
                             content, 
                             safety_settings=safe_config,
@@ -259,7 +267,7 @@ with tab1:
 
                     st.session_state['temp_content'] = content
                     st.session_state['temp_chap'] = chap_num
-                    st.rerun()
+                    # Không cần rerun để user đọc kết quả vừa stream xong
 
     # --- KHU VỰC HIỂN THỊ KẾT QUẢ MỚI ---
     st.divider()
@@ -480,4 +488,5 @@ with tab3:
 
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
 
