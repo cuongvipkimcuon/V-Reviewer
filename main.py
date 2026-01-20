@@ -316,10 +316,11 @@ with tab1:
                 except Exception as e:
                     st.error(f"Lỗi lưu: {e}")
 
-# === TAB 2: CHAT THÔNG MINH ===
+# === TAB 2: CHAT THÔNG MINH (ĐÃ NÂNG CẤP STREAMING) ===
 with tab2:
-    st.header("Chém gió với V")
+    st.header("Chém gió với V (Có não)")
     
+    # Load lịch sử chat cũ
     history = supabase.table("chat_history").select("*").eq("story_id", story_id).order("created_at", desc=False).execute()
     
     for msg in history.data:
@@ -327,46 +328,65 @@ with tab2:
         with st.chat_message(role):
             st.markdown(msg['content'])
             
-    if prompt := st.chat_input("Hỏi gì đi..."):
+    if prompt := st.chat_input("Hỏi gì đi (VD: Thằng Hùng chap trước bị sao?)"):
+        # 1. Hiện câu hỏi của User ngay lập tức
         with st.chat_message("user"):
             st.markdown(prompt)
         
-        with st.spinner("V đang suy nghĩ..."):
-            context = smart_search(prompt, story_id, top_k=7) 
-            full_prompt = f"CONTEXT TỪ DATABASE (Các chap liên quan):\n{context}\n\nUSER HỎI:\n{prompt}"
+        # 2. Xử lý trả lời (Streaming)
+        with st.chat_message("assistant"):
+            # Tạo placeholder để chữ chạy ra
+            response_box = st.empty()
+            full_response = ""
             
-            safe_config_chat = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
+            # Context Expander (Để sẵn đó, tí điền sau hoặc điền luôn)
+            
+            with st.spinner("V đang lục lọi ký ức..."):
+                # Search Context (Vẫn phải chờ bước này xíu)
+                context = smart_search(prompt, story_id, top_k=7) 
+                full_prompt = f"CONTEXT TỪ DATABASE (Các chap liên quan):\n{context}\n\nUSER HỎI:\n{prompt}"
+                
+                # Cấu hình an toàn "Tháo xích"
+                safe_config_chat = {
+                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                }
 
-            try:
-                # Dùng Gemini 3 Pro Preview cho Chat
-                model_chat = genai.GenerativeModel('gemini-3-pro-preview', system_instruction=V_CORE_INSTRUCTION)
-                # (Nhớ đổi tên model lại thành gemini-3 nếu bạn có quyền access)
-                
-                # TIMEOUT 600s
-                response = model_chat.generate_content(
-                    full_prompt, 
-                    safety_settings=safe_config_chat,
-                    request_options={'timeout': 600}
-                )
-                
-                if response.text:
-                    with st.chat_message("assistant"):
-                        st.markdown(response.text)
-                        with st.expander("🔍 V đã tìm thấy gì trong ký ức?"):
-                            st.info(context)
+                try:
+                    # Gọi Model Chat (Gemini 3/Pro) với Streaming
+                    model_chat = genai.GenerativeModel('gemini-3-flash-preview', system_instruction=V_CORE_INSTRUCTION)
+                    # (Nhớ đổi tên model nếu ông dùng bản khác)
                     
+                    response_stream = model_chat.generate_content(
+                        full_prompt, 
+                        safety_settings=safe_config_chat,
+                        stream=True, # <--- CHÌA KHÓA CHỐNG LAG
+                        request_options={'timeout': 600}
+                    )
+                    
+                    # Vòng lặp tuôn chữ
+                    for chunk in response_stream:
+                        if chunk.text:
+                            full_response += chunk.text
+                            response_box.markdown(full_response + "▌")
+                    
+                    # Chốt đơn: Hiện text full & Xóa con trỏ
+                    response_box.markdown(full_response)
+                    
+                    # Hiện context tham khảo (nhìn cho uy tín)
+                    with st.expander("🔍 V đã tìm thấy gì trong ký ức?"):
+                        st.info(context)
+                
+                    # Lưu vào Database (Lưu ngầm, không làm phiền user)
                     supabase.table("chat_history").insert([
                         {"story_id": story_id, "role": "user", "content": prompt},
-                        {"story_id": story_id, "role": "model", "content": response.text}
+                        {"story_id": story_id, "role": "model", "content": full_response}
                     ]).execute()
-            except Exception as e:
-                 with st.chat_message("assistant"):
-                    st.error(f"Lỗi: {e}")
+                    
+                except Exception as e:
+                    response_box.error(f"🚫 V bị lỗi: {e}")
 
 # === TAB 3: QUẢN LÝ BIBLE (TỐI ƯU KHÔNG CHẠY NGẦM) ===
 with tab3:
@@ -488,6 +508,7 @@ with tab3:
 
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
 
 
 
