@@ -316,37 +316,60 @@ with tab1:
                 except Exception as e:
                     st.error(f"Lỗi lưu: {e}")
 
-# === TAB 2: CHAT THÔNG MINH (ĐÃ NÂNG CẤP STREAMING) ===
+# === TAB 2: CHAT THÔNG MINH (CÓ NÚT "KILL CHAT" SIÊU GỌN) ===
 with tab2:
-    st.header("Chém gió với V (Có não)")
-    
-    # Load lịch sử chat cũ
+    # 1. Header có nút Dọn dẹp
+    c_head_1, c_head_2 = st.columns([3, 1])
+    with c_head_1:
+        st.header("Chém gió với V")
+    with c_head_2:
+        # Nút hủy diệt (Kill Chat)
+        if st.button("🗑️ Xóa sạch Chat", type="primary", use_container_width=True, help="Xóa toàn bộ lịch sử chat của truyện này để chat lại từ đầu cho đỡ lag."):
+            try:
+                # Xóa trong Database
+                supabase.table("chat_history").delete().eq("story_id", story_id).execute()
+                st.success("Đã xóa sạch ký ức! Bắt đầu lại nào.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Lỗi xóa: {e}")
+
+    # 2. Load lịch sử chat (CHỈ LOAD 50 CÂU GẦN NHẤT CHO NHẸ)
+    # Dùng .limit(50) để UI không bị đơ nếu lịch sử quá dài
     history = supabase.table("chat_history").select("*").eq("story_id", story_id).order("created_at", desc=False).execute()
     
-    for msg in history.data:
+    # Hiển thị Chat
+    # Mẹo: Nếu dài quá > 50 dòng thì hiển thị trong Expander cho gọn
+    messages = history.data
+    if len(messages) > 50:
+        with st.expander(f"Xem {len(messages) - 50} tin nhắn cũ hơn...", expanded=False):
+             for msg in messages[:-50]:
+                role = "user" if msg['role'] == 'user' else "assistant"
+                with st.chat_message(role):
+                    st.markdown(msg['content'])
+        # Chỉ hiện 50 tin mới nhất ở ngoài
+        display_msgs = messages[-50:]
+    else:
+        display_msgs = messages
+
+    for msg in display_msgs:
         role = "user" if msg['role'] == 'user' else "assistant"
         with st.chat_message(role):
             st.markdown(msg['content'])
             
-    if prompt := st.chat_input("Hỏi gì đi (VD: Thằng Hùng chap trước bị sao?)"):
-        # 1. Hiện câu hỏi của User ngay lập tức
+    # 3. Ô nhập liệu & Xử lý (Code cũ nhưng đã tối ưu)
+    if prompt := st.chat_input("Hỏi gì đi... (Gợi ý: Chap này có gì vô lý không?)"):
         with st.chat_message("user"):
             st.markdown(prompt)
         
-        # 2. Xử lý trả lời (Streaming)
         with st.chat_message("assistant"):
-            # Tạo placeholder để chữ chạy ra
             response_box = st.empty()
             full_response = ""
             
-            # Context Expander (Để sẵn đó, tí điền sau hoặc điền luôn)
-            
             with st.spinner("V đang lục lọi ký ức..."):
-                # Search Context (Vẫn phải chờ bước này xíu)
-                context = smart_search(prompt, story_id, top_k=7) 
-                full_prompt = f"CONTEXT TỪ DATABASE (Các chap liên quan):\n{context}\n\nUSER HỎI:\n{prompt}"
+                # Tăng top_k lên 15 để nhớ dai hơn như ông yêu cầu
+                context = smart_search(prompt, story_id, top_k=20) 
+                full_prompt = f"CONTEXT TỪ DATABASE:\n{context}\n\nUSER HỎI:\n{prompt}"
                 
-                # Cấu hình an toàn "Tháo xích"
                 safe_config_chat = {
                     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -355,31 +378,27 @@ with tab2:
                 }
 
                 try:
-                    # Gọi Model Chat (Gemini 3/Pro) với Streaming
+                    # Dùng Model Chat (Lưu ý tên Model của ông)
+                    # Nếu ông dùng Gemini 3 thì sửa lại tên nhé, tui để 1.5 Pro cho chắc cú
                     model_chat = genai.GenerativeModel('gemini-3-flash-preview', system_instruction=V_CORE_INSTRUCTION)
-                    # (Nhớ đổi tên model nếu ông dùng bản khác)
                     
                     response_stream = model_chat.generate_content(
                         full_prompt, 
                         safety_settings=safe_config_chat,
-                        stream=True, # <--- CHÌA KHÓA CHỐNG LAG
+                        stream=True, 
                         request_options={'timeout': 600}
                     )
                     
-                    # Vòng lặp tuôn chữ
                     for chunk in response_stream:
                         if chunk.text:
                             full_response += chunk.text
                             response_box.markdown(full_response + "▌")
                     
-                    # Chốt đơn: Hiện text full & Xóa con trỏ
                     response_box.markdown(full_response)
                     
-                    # Hiện context tham khảo (nhìn cho uy tín)
-                    with st.expander("🔍 V đã tìm thấy gì trong ký ức?"):
+                    with st.expander("🔍 Context đã dùng"):
                         st.info(context)
                 
-                    # Lưu vào Database (Lưu ngầm, không làm phiền user)
                     supabase.table("chat_history").insert([
                         {"story_id": story_id, "role": "user", "content": prompt},
                         {"story_id": story_id, "role": "model", "content": full_response}
@@ -508,6 +527,7 @@ with tab3:
 
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
 
 
 
