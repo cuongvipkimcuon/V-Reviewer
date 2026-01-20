@@ -1,0 +1,6 @@
+streamlit
+google-generativeai
+supabase
+pandas
+numpy
+pyarrow
