@@ -12,7 +12,12 @@ from google.api_core.exceptions import ResourceExhausted, DeadlineExceeded, Serv
 import time
 
 import extra_streamlit_components as stx  # <--- THƯ VIỆN QUẢN LÝ COOKIE
-
+SAFE_CONFIG = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
 # --- 1. CẤU HÌNH TRANG ---
 st.set_page_config(page_title="V-Reviewer", page_icon="🔥", layout="wide")
 
@@ -119,7 +124,7 @@ with st.sidebar:
 # ============================================================
 # 🔥 HÀM "BẤT TỬ" (GENERATE WITH FALLBACK)
 # ============================================================
-def generate_content_with_fallback(prompt, system_instruction, safety_settings=None, stream=True):
+def generate_content_with_fallback(prompt, system_instruction, safety_settings=SAFE_CONFIG, stream=True):
     """
     Hàm này sẽ thử lần lượt các model trong danh sách MODEL_PRIORITY.
     Nếu gặp lỗi Quota (429) hoặc Timeout, nó tự nhảy sang model tiếp theo.
@@ -772,5 +777,6 @@ with tab3:
                     
                 except Exception as e:
                     st.error(f"Lỗi khi lưu: {e}")
+
 
 
