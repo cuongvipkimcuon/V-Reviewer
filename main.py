@@ -479,7 +479,7 @@ with tab2:
                 
                 # Cấu hình AI
                 # Lưu ý: Nhớ đổi tên model nếu ông dùng bản khác (ví dụ 'gemini-1.5-pro')
-                model_chat = genai.GenerativeModel('gemini-2.0-flash', system_instruction=V_CORE_INSTRUCTION)
+                model_chat = genai.GenerativeModel('gemini-3-pro-preview', system_instruction=V_CORE_INSTRUCTION)
                 
                 try:
                     response_stream = model_chat.generate_content(
@@ -627,6 +627,7 @@ with tab3:
 
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
 
 
 
