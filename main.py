@@ -8,18 +8,17 @@ from persona import V_CORE_INSTRUCTION, REVIEW_PROMPT, EXTRACTOR_PROMPT
 # [QUAN TRỌNG] Import thư viện để tháo xích bộ lọc an toàn
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
-# --- 1. SETUP & AUTH (TỐI ƯU HÓA CACHE & SESSION) ---
+# --- 1. SETUP & AUTH (CHUẨN: AN TOÀN + NHỚ DAI KHI F5) ---
 st.set_page_config(page_title="V-Reviewer", page_icon="🔥", layout="wide")
 
-# Dùng cache_resource để giữ kết nối, F5 không phải kết nối lại từ đầu -> Đỡ lag
-# Mỗi khi có người vào, Server sẽ tạo một kết nối MỚI RIÊNG BIỆT cho người đó.
+# Hàm khởi tạo kết nối (KHÔNG DÙNG CACHE RESOURCE ĐỂ TRÁNH LỘ ACC)
 def init_services():
     try:
         SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
         SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
         GEMINI_KEY = st.secrets["gemini"]["API_KEY"]
         
-        # Tạo client mới tinh cho user này
+        # Tạo client mới tinh cho user hiện tại
         client = create_client(SUPABASE_URL, SUPABASE_KEY)
         genai.configure(api_key=GEMINI_KEY)
         
@@ -27,9 +26,23 @@ def init_services():
     except Exception as e:
         return None
 
-# Gọi hàm (Không cache)
 # Khởi tạo dịch vụ
 supabase = init_services()
+
+# --- 👇 ĐÂY LÀ ĐOẠN QUAN TRỌNG ÔNG ĐANG THIẾU 👇 ---
+# Logic: Khi F5, Streamlit chạy lại từ đầu. Đoạn này sẽ cứu vớt phiên đăng nhập.
+
+if 'user' not in st.session_state:
+    # Hỏi Supabase: "Trình duyệt này còn giữ chìa khóa (token) cũ không?"
+    session = supabase.auth.get_session()
+    
+    if session:
+        # CÓ: Lấy thông tin user cũ nhét lại vào session -> Vào thẳng, KHÔNG bị out
+        st.session_state.user = session.user
+        # st.toast("Đã khôi phục phiên làm việc!", icon="🔄") 
+    else:
+        # KHÔNG: Thì thôi, lát nữa code bên dưới sẽ hiện form đăng nhập
+        pass
 
 if not supabase:
     st.error("❌ Lỗi kết nối! Kiểm tra lại secrets.toml")
@@ -572,6 +585,7 @@ with tab3:
 
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
 
 
 
