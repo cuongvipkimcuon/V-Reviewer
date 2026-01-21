@@ -167,7 +167,7 @@ def get_embedding(text):
         task_type="retrieval_document"
     )['embedding']
 
-def smart_search(query_text, story_id, current_chap=None, top_k=20): 
+def smart_search(query_text, story_id, current_chap=None, top_k=80): 
     try:
         query_vec = get_embedding(query_text)
         response = supabase.rpc("match_bible", {
@@ -523,3 +523,4 @@ with tab3:
         # ... (Phần hiển thị list giữ nguyên) ...
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
