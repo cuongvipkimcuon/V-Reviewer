@@ -574,49 +574,200 @@ with tab2:
                 except Exception as e:
                     response_box.error(f"🚨 Lỗi toàn hệ thống: {e}")
 
-# === TAB 3: QUẢN LÝ BIBLE (GIỮ NGUYÊN) ===
+# === TAB 3: QUẢN LÝ BIBLE (PHIÊN BẢN BIÊN TẬP VIÊN) ===
 with tab3:
-    st.header("📚 Quản lý Dữ liệu Cốt truyện")
-    if st.button("🔄 Tải / Cập nhật Danh sách Bible"):
-        data = supabase.table("story_bible").select("*").eq("story_id", story_id).order("created_at", desc=True).execute()
-        st.session_state['bible_data_cache'] = data.data
+    st.header("📚 Quản lý Dữ liệu Cốt truyện (CMS)")
     
+    # Nút tải dữ liệu (Giữ nguyên logic cache để đỡ tốn API)
+    col_load, col_stat = st.columns([1, 3])
+    with col_load:
+        if st.button("🔄 Tải / Refresh Dữ liệu"):
+            data = supabase.table("story_bible").select("*").eq("story_id", story_id).order("source_chapter", desc=True).execute()
+            st.session_state['bible_data_cache'] = data.data
+            st.rerun()
+
     bible_list = st.session_state.get('bible_data_cache', [])
 
     if not bible_list:
-        st.info("Bấm nút '🔄 Tải...' ở trên để xem dữ liệu.")
+        st.info("Dữ liệu trống hoặc chưa tải. Bấm nút '🔄 Tải...' để xem.")
     else:
+        # Convert sang Pandas để dễ xử lý
         df = pd.DataFrame(bible_list)
-        with st.expander("➕ Thêm dữ liệu Bible thủ công", expanded=False):
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                m_name = st.text_input("Tên thực thể", placeholder="Nhân vật, địa danh...")
-                m_chap = st.number_input("Thuộc chương", value=1, min_value=1)
-            with c2:
-                m_desc = st.text_area("Mô tả chi tiết", height=100)
+        
+        # Sắp xếp cột cho đẹp
+        df = df[['source_chapter', 'entity_name', 'description', 'id', 'created_at']]
+        
+        # =========================================================
+        # TÍNH NĂNG 1: AI DỌN DẸP & HỢP NHẤT (SMART MERGE)
+        # =========================================================
+        with st.expander("🧠 AI Hợp Nhất & Dọn Dẹp (Smart Merge)", expanded=False):
+            st.write("AI sẽ tìm các mục **trùng tên**, gộp nội dung của chúng lại thành một bản hoàn chỉnh nhất và cập nhật vào chương mới nhất.")
+            
+            # 1. Tìm các mục trùng tên
+            name_counts = df['entity_name'].value_counts()
+            duplicates = name_counts[name_counts > 1].index.tolist()
+            
+            if not duplicates:
+                st.success("✅ Dữ liệu rất sạch! Không có tên nào bị trùng.")
+            else:
+                st.warning(f"⚠️ Phát hiện {len(duplicates)} thực thể bị trùng lặp: {', '.join(duplicates)}")
                 
-            if st.button("💾 Lưu vào Database ngay"):
-                if m_name and m_desc:
-                    try:
-                        vec = get_embedding(m_desc)
-                        supabase.table("story_bible").insert({
-                            "story_id": story_id, "entity_name": m_name, "description": m_desc, "embedding": vec, "source_chapter": m_chap
-                        }).execute()
-                        st.success(f"Đã thêm '{m_name}'!")
-                        if 'bible_data_cache' in st.session_state: del st.session_state['bible_data_cache']
-                        st.rerun() 
-                    except Exception as e: st.error(f"Lỗi lưu: {e}")
+                if st.button(f"🤖 Hợp nhất {len(duplicates)} thực thể này ngay", type="primary"):
+                    progress_bar = st.progress(0)
+                    log_box = st.empty()
+                    
+                    for idx, entity_name in enumerate(duplicates):
+                        # Lấy tất cả các dòng của thực thể này
+                        rows = df[df['entity_name'] == entity_name].sort_values(by='source_chapter')
+                        
+                        # Chuẩn bị dữ liệu gửi cho AI
+                        context_to_merge = []
+                        ids_to_delete = []
+                        latest_chapter = 0
+                        latest_id = None
+                        
+                        for _, row in rows.iterrows():
+                            context_to_merge.append(f"- [Chap {row['source_chapter']}]: {row['description']}")
+                            ids_to_delete.append(row['id'])
+                            
+                            # Tìm chương mới nhất để giữ lại ID đó (hoặc tạo mới)
+                            if row['source_chapter'] >= latest_chapter:
+                                latest_chapter = row['source_chapter']
+                                latest_id = row['id']
+                        
+                        # ID giữ lại là cái mới nhất, các cái khác xóa
+                        ids_to_delete.remove(latest_id)
+                        
+                        # Prompt gộp
+                        merge_prompt = f"""
+                        Hãy đóng vai Editor chuyên nghiệp. Dưới đây là các mảnh thông tin rời rạc về nhân vật/sự kiện "{entity_name}" qua các chương:
+                        
+                        {chr(10).join(context_to_merge)}
+                        
+                        YÊU CẦU:
+                        Viết lại một đoạn mô tả TỔNG HỢP duy nhất (khoảng 100-150 từ).
+                        - Kết hợp thông tin từ quá khứ và hiện tại.
+                        - Giữ lại các chi tiết quan trọng (ngoại hình, năng lực, thay đổi tâm lý).
+                        - Đánh dấu [MỚI] trước thông tin cập nhật gần nhất.
+                        - Không dùng gạch đầu dòng, viết thành đoạn văn.
+                        """
+                        
+                        try:
+                            # Gọi AI Merge
+                            log_box.info(f"Đang gộp: {entity_name}...")
+                            merged_desc_res = generate_content_with_fallback(
+                                prompt=merge_prompt,
+                                system_instruction="Bạn là người tóm tắt cốt truyện.",
+                                stream=False
+                            )
+                            new_desc = merged_desc_res.text.strip()
+                            
+                            # Tính lại Vector
+                            new_vec = get_embedding(new_desc)
+                            
+                            # Update dòng mới nhất (giữ ID mới nhất)
+                            supabase.table("story_bible").update({
+                                "description": new_desc,
+                                "embedding": new_vec,
+                                "source_chapter": latest_chapter # Đảm bảo nó ở chương mới nhất
+                            }).eq("id", latest_id).execute()
+                            
+                            # Xóa các dòng cũ thừa thãi
+                            if ids_to_delete:
+                                supabase.table("story_bible").delete().in_("id", ids_to_delete).execute()
+                                
+                        except Exception as e:
+                            st.error(f"Lỗi khi gộp {entity_name}: {e}")
+                            
+                        # Update progress
+                        progress_bar.progress((idx + 1) / len(duplicates))
+                    
+                    st.success("✅ Đã hợp nhất xong! Hãy bấm Refresh để xem kết quả.")
+                    if st.button("🔄 Refresh ngay"):
+                        st.rerun()
 
         st.divider()
-        with st.expander("🧠 AI Dọn Rác", expanded=True):
-            if st.button("🤖 Quét rác bằng Gemini Flash", type="primary"):
-                # Có thể dùng fallback ở đây nếu thích, nhưng tác vụ này nhẹ nên dùng Flash thường cũng được
-                # Để cho đồng bộ, tôi demo gọi Flash trực tiếp (hoặc dùng hàm fallback cũng được)
-                st.info("Tính năng này giữ nguyên logic cũ cho nhẹ.")
-        
-        # ... (Phần hiển thị list giữ nguyên) ...
-        cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
-        st.dataframe(df[cols_show], use_container_width=True, height=500)
 
+        # =========================================================
+        # TÍNH NĂNG 2: BẢNG CHỈNH SỬA TRỰC TIẾP (EXCEL STYLE)
+        # =========================================================
+        st.subheader("📝 Chỉnh sửa Dữ liệu (Click vào ô để sửa)")
+        st.caption("⚠️ Lưu ý: Sửa 'Mô tả' sẽ tốn thời gian hơn chút vì hệ thống phải tính lại Vector.")
 
+        # Cấu hình bảng Editor
+        edited_df = st.data_editor(
+            df,
+            column_config={
+                "source_chapter": st.column_config.NumberColumn("Chap", min_value=1, width="small"),
+                "entity_name": st.column_config.TextColumn("Tên Thực Thể", width="medium"),
+                "description": st.column_config.TextColumn("Mô tả chi tiết (Double click để sửa)", width="large"),
+                "id": None, # Ẩn cột ID không cho sửa
+                "created_at": None # Ẩn ngày tạo
+            },
+            use_container_width=True,
+            num_rows="dynamic", # Cho phép thêm/xóa dòng trực tiếp
+            key="bible_editor"
+        )
+
+        # NÚT LƯU THAY ĐỔI
+        if st.button("💾 Lưu các thay đổi", type="primary"):
+            with st.spinner("Đang đồng bộ dữ liệu..."):
+                try:
+                    # Lấy thông tin thay đổi từ Session State của data_editor
+                    changes = st.session_state["bible_editor"]
+                    
+                    # 1. XỬ LÝ DÒNG ĐÃ XÓA (DELETED ROWS)
+                    # changes['deleted_rows'] trả về list index của dòng bị xóa
+                    if changes["deleted_rows"]:
+                        # Phải map index bị xóa với ID trong dataframe gốc (df)
+                        ids_to_del = [df.iloc[i]['id'] for i in changes["deleted_rows"]]
+                        if ids_to_del:
+                            supabase.table("story_bible").delete().in_("id", ids_to_del).execute()
+                            st.toast(f"🗑️ Đã xóa {len(ids_to_del)} mục.", icon="🗑️")
+
+                    # 2. XỬ LÝ DÒNG ĐÃ SỬA (EDITED ROWS)
+                    # changes['edited_rows'] là dict {row_index: {col_name: new_value}}
+                    for idx, edits in changes["edited_rows"].items():
+                        row_id = df.iloc[idx]['id']
+                        original_row = df.iloc[idx]
+                        
+                        update_data = {}
+                        
+                        # Check xem có sửa Tên hay Chap không
+                        if "entity_name" in edits: update_data["entity_name"] = edits["entity_name"]
+                        if "source_chapter" in edits: update_data["source_chapter"] = edits["source_chapter"]
+                        
+                        # Check xem có sửa MÔ TẢ không (Quan trọng: Phải tính lại Vector)
+                        if "description" in edits:
+                            new_desc = edits["description"]
+                            update_data["description"] = new_desc
+                            # Gọi API Embedding
+                            update_data["embedding"] = get_embedding(new_desc)
+                        
+                        if update_data:
+                            supabase.table("story_bible").update(update_data).eq("id", row_id).execute()
+                    
+                    # 3. XỬ LÝ DÒNG MỚI THÊM (ADDED ROWS)
+                    # changes['added_rows'] là list các dict
+                    for new_row in changes["added_rows"]:
+                        # Chỉ lưu nếu có điền tên và mô tả (tránh lưu dòng trống)
+                        if "entity_name" in new_row and "description" in new_row and new_row["entity_name"] and new_row["description"]:
+                            vec = get_embedding(new_row["description"])
+                            supabase.table("story_bible").insert({
+                                "story_id": story_id,
+                                "entity_name": new_row["entity_name"],
+                                "description": new_row["description"],
+                                "source_chapter": new_row.get("source_chapter", 1), # Mặc định chap 1 nếu ko điền
+                                "embedding": vec
+                            }).execute()
+
+                    st.success("✅ Đã cập nhật database thành công!")
+                    
+                    # Xóa cache để load lại bảng mới
+                    del st.session_state['bible_data_cache']
+                    time.sleep(1)
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Lỗi khi lưu: {e}")
 
