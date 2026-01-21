@@ -8,54 +8,62 @@ from persona import V_CORE_INSTRUCTION, REVIEW_PROMPT, EXTRACTOR_PROMPT
 # [QUAN TRỌNG] Import thư viện để tháo xích bộ lọc an toàn
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
-# --- 1. SETUP & AUTH (CHUẨN: AN TOÀN + NHỚ DAI KHI F5) ---
+import time
+
+import extra_streamlit_components as stx  # <--- THƯ VIỆN QUẢN LÝ COOKIE
+
+# --- 1. SETUP & AUTH (PHIÊN BẢN COOKIE BẤT TỬ) ---
 st.set_page_config(page_title="V-Reviewer", page_icon="🔥", layout="wide")
 
-# Hàm khởi tạo kết nối (KHÔNG DÙNG CACHE RESOURCE ĐỂ TRÁNH LỘ ACC)
+# Khởi tạo Supabase (An toàn, KHÔNG cache client để tránh lộ acc)
 def init_services():
     try:
         SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
         SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
         GEMINI_KEY = st.secrets["gemini"]["API_KEY"]
         
-        # Tạo client mới tinh cho user hiện tại
         client = create_client(SUPABASE_URL, SUPABASE_KEY)
         genai.configure(api_key=GEMINI_KEY)
-        
         return client
     except Exception as e:
         return None
 
-# Khởi tạo dịch vụ
 supabase = init_services()
-
-# --- 👇 ĐÂY LÀ ĐOẠN QUAN TRỌNG ÔNG ĐANG THIẾU 👇 ---
-# Logic: Khi F5, Streamlit chạy lại từ đầu. Đoạn này sẽ cứu vớt phiên đăng nhập.
-
-if 'user' not in st.session_state:
-    # Hỏi Supabase: "Trình duyệt này còn giữ chìa khóa (token) cũ không?"
-    session = supabase.auth.get_session()
-    
-    if session:
-        # CÓ: Lấy thông tin user cũ nhét lại vào session -> Vào thẳng, KHÔNG bị out
-        st.session_state.user = session.user
-        # st.toast("Đã khôi phục phiên làm việc!", icon="🔄") 
-    else:
-        # KHÔNG: Thì thôi, lát nữa code bên dưới sẽ hiện form đăng nhập
-        pass
 
 if not supabase:
     st.error("❌ Lỗi kết nối! Kiểm tra lại secrets.toml")
     st.stop()
 
-# Cơ chế khôi phục phiên đăng nhập (Cố gắng giữ user khi F5)
-if 'user' not in st.session_state:
-    session = supabase.auth.get_session()
-    if session:
-        st.session_state.user = session.user
+# --- KHỞI TẠO QUẢN LÝ COOKIE ---
+# Cái này giúp lưu token vào trình duyệt, F5 xong code sẽ đọc lại cookie này
+cookie_manager = stx.CookieManager()
 
-# Hàm Login
-def login_page():
+# --- HÀM LOGIN BẰNG COOKIE (TỰ ĐỘNG) ---
+def check_cookie_login():
+    # Cố gắng lấy token từ cookie
+    access_token = cookie_manager.get("supabase_access_token")
+    refresh_token = cookie_manager.get("supabase_refresh_token")
+    
+    if access_token and refresh_token:
+        try:
+            # Bảo Supabase: "Tao có chìa khóa cũ đây, cho tao vào lại"
+            session = supabase.auth.set_session(access_token, refresh_token)
+            if session:
+                st.session_state.user = session.user
+                return True
+        except Exception as e:
+            # Token hết hạn hoặc lỗi -> Kệ nó, lát bắt đăng nhập lại
+            pass
+    return False
+
+# --- LOGIC CHÍNH: KIỂM TRA TRẠNG THÁI ĐĂNG NHẬP ---
+
+# 1. Nếu chưa có User trong RAM -> Thử check Cookie xem có cứu vớt được không
+if 'user' not in st.session_state:
+    check_cookie_login()
+
+# 2. Nếu check Cookie rồi mà vẫn chưa có User -> HIỆN FORM ĐĂNG NHẬP
+if 'user' not in st.session_state:
     st.title("🔐 Đăng nhập V-Reviewer")
     st.write("Hệ thống trợ lý viết truyện cực chiến (Gemini 3 Powered)")
     
@@ -65,26 +73,59 @@ def login_page():
         password = st.text_input("Mật khẩu", type="password")
         
         col1, col2 = st.columns(2)
+        
+        # --- NÚT ĐĂNG NHẬP ---
         if col1.button("Đăng Nhập", type="primary", use_container_width=True):
             try:
                 res = supabase.auth.sign_in_with_password({"email": email, "password": password})
                 st.session_state.user = res.user
+                
+                # [QUAN TRỌNG] Đăng nhập thành công -> GHI COOKIE NGAY
+                # Token sống 7 ngày (hoặc tùy setting Supabase)
+                cookie_manager.set("supabase_access_token", res.session.access_token, key="set_access")
+                cookie_manager.set("supabase_refresh_token", res.session.refresh_token, key="set_refresh")
+                
+                st.success("Đăng nhập thành công! Đang vào...")
+                time.sleep(1) # Đợi xíu cho cookie kịp lưu
                 st.rerun()
             except Exception as e:
                 st.error(f"Lỗi đăng nhập: {e}")
                 
+        # --- NÚT ĐĂNG KÝ ---
         if col2.button("Đăng Ký Mới", use_container_width=True):
             try:
                 res = supabase.auth.sign_up({"email": email, "password": password})
                 st.session_state.user = res.user
-                st.success("Đã tạo user! Hãy đăng nhập lại.")
+                
+                # Đăng ký xong cũng lưu cookie luôn cho tiện
+                if res.session:
+                    cookie_manager.set("supabase_access_token", res.session.access_token, key="set_access_up")
+                    cookie_manager.set("supabase_refresh_token", res.session.refresh_token, key="set_refresh_up")
+                
+                st.success("Đã tạo user! Vào việc luôn.")
+                time.sleep(1)
+                st.rerun()
             except Exception as e:
                 st.error(f"Lỗi đăng ký: {e}")
+    
+    st.stop() # Dừng tại đây, không cho chạy code bên dưới nếu chưa login
 
-if 'user' not in st.session_state:
-    login_page()
-    st.stop()
+# --- 3. NẾU ĐÃ ĐĂNG NHẬP -> HIỆN NÚT ĐĂNG XUẤT Ở SIDEBAR ---
+with st.sidebar:
+    st.write(f"Xin chào, **{st.session_state.user.email}**")
+    if st.button("🚪 Đăng xuất"):
+        supabase.auth.sign_out()
+        # Xóa sạch Cookie để không tự login lại nữa
+        cookie_manager.delete("supabase_access_token")
+        cookie_manager.delete("supabase_refresh_token")
+        
+        # Xóa session RAM
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+            
+        st.rerun()
 
+# ... (PHẦN CODE CÒN LẠI CỦA ÔNG: TAB 1, TAB 2, TAB 3...) ...
 # --- 2. CÁC HÀM "NÃO BỘ" THÔNG MINH ---
 
 def get_embedding(text):
@@ -585,6 +626,7 @@ with tab3:
 
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
 
 
 
