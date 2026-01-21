@@ -318,157 +318,139 @@ with tab1:
                 except Exception as e:
                     st.error(f"Lỗi lưu: {e}")
 
-# === TAB 2: CHAT THÔNG MINH (LOGIC: RANGE CHAPTER + CHAT HISTORY MEMORY) ===
+# === TAB 2: CHAT THÔNG MINH (GIAO DIỆN CHUẨN CHAT BOX - CÓ SEARCH) ===
 with tab2:
-    # 1. Header & Nút xóa chat
-    c_head_1, c_head_2 = st.columns([3, 1])
-    with c_head_1:
-        st.header("Chém gió với V")
-    with c_head_2:
-        if st.button("🗑️ Xóa sạch Chat", type="primary", use_container_width=True):
+    # --- 1. THANH CÔNG CỤ (HEADER & SEARCH) ---
+    # Chia cột: Tiêu đề to bên trái, Ô tìm kiếm và Nút xóa bên phải
+    c1, c2, c3 = st.columns([2, 2, 1])
+    
+    with c1:
+        st.subheader("💬 Chém gió với V")
+        
+    with c2:
+        # TÍNH NĂNG SEARCH: Lọc tin nhắn cũ
+        search_query = st.text_input("🔍 Tìm trong lịch sử chat:", placeholder="Gõ từ khóa để tìm lại ký ức...", label_visibility="collapsed")
+        
+    with c3:
+        # Nút xóa chat (Clear History)
+        if st.button("🗑️ Dọn rác", type="primary", use_container_width=True, help="Xóa sạch lịch sử chat cũ"):
             try:
                 supabase.table("chat_history").delete().eq("story_id", story_id).execute()
-                st.success("Đã reset!")
+                st.toast("🧹 Đã dọn sạch nhà cửa!", icon="✨")
+                time.sleep(1) # Đợi xíu cho user đọc
                 st.rerun()
             except: pass
 
-    # 2. Load và Hiển thị lịch sử chat
-    history = supabase.table("chat_history").select("*").eq("story_id", story_id).order("created_at", desc=False).execute()
-    messages = history.data
-    
-    # Gom gọn nếu dài
-    if len(messages) > 50:
-        with st.expander(f"Xem tin nhắn cũ...", expanded=False):
-             for msg in messages[:-50]:
-                with st.chat_message("user" if msg['role'] == 'user' else "assistant"):
-                    st.markdown(msg['content'])
-        display_msgs = messages[-50:]
-    else:
-        display_msgs = messages
+    # --- 2. HIỂN THỊ LỊCH SỬ CHAT ---
+    # Lấy dữ liệu từ Database
+    try:
+        history = supabase.table("chat_history").select("*").eq("story_id", story_id).order("created_at", desc=False).execute()
+        messages = history.data
+    except:
+        messages = []
 
+    # Xử lý Logic Hiển thị (Có Search hay không)
+    if search_query:
+        # Nếu đang tìm kiếm: Chỉ hiện tin nhắn có chứa từ khóa
+        st.info(f"ang hiển thị kết quả tìm kiếm cho: '{search_query}'")
+        display_msgs = [m for m in messages if search_query.lower() in m['content'].lower()]
+        if not display_msgs:
+            st.warning("Không tìm thấy nội dung nào.")
+    else:
+        # Nếu chat bình thường: Chỉ hiện 50 tin gần nhất cho đỡ lag
+        # (Tin cũ quá tự ẩn, muốn xem thì dùng ô Search ở trên)
+        display_msgs = messages[-50:] if len(messages) > 50 else messages
+
+    # Vòng lặp in tin nhắn ra màn hình
     for msg in display_msgs:
-        with st.chat_message("user" if msg['role'] == 'user' else "assistant"):
+        # Avatar: User là hình người, AI là hình Robot
+        avatar = "👤" if msg['role'] == 'user' else "🤖"
+        with st.chat_message(msg['role'], avatar=avatar):
             st.markdown(msg['content'])
-            
-    # --- PHẦN XỬ LÝ SIÊU CẤP (UPDATED) ---
-    if prompt := st.chat_input("Hỏi gì đi..."):
-        with st.chat_message("user"):
+
+    # --- 3. Ô NHẬP LIỆU (LUÔN DÍNH Ở DƯỚI) ---
+    if prompt := st.chat_input("Hỏi V về truyện (VD: Chap 3-5 có gì vô lý?)..."):
+        
+        # A. Hiện câu hỏi của User ngay lập tức
+        with st.chat_message("user", avatar="👤"):
             st.markdown(prompt)
         
-        with st.chat_message("assistant"):
+        # B. Xử lý trả lời của AI
+        with st.chat_message("assistant", avatar="🤖"):
             response_box = st.empty()
             full_response = ""
             
-            with st.spinner("V đang suy nghĩ..."):
-                # 1. BẮT SỐ CHƯƠNG HOẶC KHOẢNG CHƯƠNG (VD: Chap 3, Chap 3-5, Chap 3 đến 5)
-                # Regex này bắt: (từ khóa) (số 1) (dấu gạch/đến) (số 2 - tùy chọn)
+            # Logic Xử lý thông minh (Giữ nguyên logic lõi ông đã duyệt)
+            with st.spinner("Đang load dữ liệu..."):
+                # 1. BẮT SỐ CHƯƠNG (Regex Range)
                 match = re.search(r'(?:chap|chương|chat|số|kỳ)\s*(\d+)(?:\s*(?:-|đến)\s*(\d+))?', prompt.lower())
                 
                 context_data = ""
-                context_source = "Chat History + Vector"
+                context_source = "Chat History + Vector" # Mặc định
                 
                 if match:
-                    # --- TRƯỜNG HỢP 1: CÓ SỐ/KHOẢNG CHƯƠNG ---
+                    # -- TRƯỜNG HỢP CÓ SỐ CHƯƠNG --
                     start_chap = int(match.group(1))
-                    end_chap = int(match.group(2)) if match.group(2) else start_chap # Nếu không có số sau thì end = start
-                    
-                    # Đảm bảo start <= end
+                    end_chap = int(match.group(2)) if match.group(2) else start_chap
                     if start_chap > end_chap: start_chap, end_chap = end_chap, start_chap
                     
-                    context_source = f"FULL DATA CHAP {start_chap} - {end_chap}"
-                    
-                    # Lấy List các chap cần soi
                     target_chaps = list(range(start_chap, end_chap + 1))
                     
-                    # A. Lấy Bible
+                    # Lấy Bible
                     bible_res = supabase.table("story_bible").select("*").eq("story_id", story_id).in_("source_chapter", target_chaps).execute()
                     bible_text = "\n".join([f"- [Chap {item['source_chapter']}] {item['entity_name']}: {item['description']}" for item in bible_res.data])
                     
-                    # B. Lấy Nội dung gốc
+                    # Lấy Nội dung gốc
                     content_res = supabase.table("chapters").select("chapter_number, content").eq("story_id", story_id).in_("chapter_number", target_chaps).order("chapter_number").execute()
-                    
                     real_content_text = ""
                     for c in content_res.data:
-                        real_content_text += f"\n\n--- NỘI DUNG GỐC CHƯƠNG {c['chapter_number']} ---\n{c['content']}"
+                        real_content_text += f"\n\n--- NỘI DUNG GỐC CHAP {c['chapter_number']} ---\n{c['content']}"
                     
-                    if not real_content_text:
-                         st.toast(f"⚠️ Không tìm thấy nội dung gốc từ chap {start_chap}-{end_chap}!", icon="warning")
-
-                    context_data = f"""
-                    YÊU CẦU: User đang hỏi cụ thể về phạm vi CHƯƠNG {start_chap} đến {end_chap}.
-                    HÃY TRẢ LỜI DỰA TRÊN DỮ LIỆU CUNG CẤP DƯỚI ĐÂY:
-                    
-                    === DỮ LIỆU TỪ BIBLE ===
-                    {bible_text}
-                    
-                    === NỘI DUNG GỐC (READ ONLY) ===
-                    {real_content_text}
-                    """
+                    context_data = f"DỮ LIỆU TỪ BIBLE:\n{bible_text}\n\nDỮ LIỆU GỐC:\n{real_content_text}"
+                    context_source = f"Chap {start_chap}-{end_chap}"
+                
                 else:
-                    # --- TRƯỜNG HỢP 2: KHÔNG NHẮC CHAP -> DÙNG CHAT HISTORY + VECTOR ---
-                    
-                    # A. Lấy Vector Search (Kiến thức nền)
+                    # -- TRƯỜNG HỢP KHÔNG CÓ SỐ CHƯƠNG (Dùng Vector + History) --
                     vector_context = smart_search(prompt, story_id, top_k=15)
                     
-                    # B. [QUAN TRỌNG] Lấy 10 câu chat gần nhất để làm Context (Short-term memory)
-                    # Nếu không làm bước này, AI sẽ quên sạch những gì vừa nói
+                    # Lấy 10 câu chat gần nhất làm ngữ cảnh
                     recent_chat = messages[-10:] if messages else []
-                    chat_memory = ""
-                    for m in recent_chat:
-                        role_name = "User" if m['role'] == 'user' else "V (AI)"
-                        chat_memory += f"{role_name}: {m['content']}\n"
+                    chat_memory = "\n".join([f"{'User' if m['role']=='user' else 'V'}: {m['content']}" for m in recent_chat])
 
-                    context_data = f"""
-                    --- KIẾN THỨC LIÊN QUAN TỪ BIBLE (VECTOR) ---
-                    {vector_context}
-                    
-                    --- LỊCH SỬ TRÒ CHUYỆN GẦN ĐÂY (SHORT-TERM MEMORY) ---
-                    {chat_memory}
-                    
-                    LƯU Ý: User KHÔNG nhắc đến chương cụ thể. 
-                    Hãy ưu tiên xem xét LỊCH SỬ TRÒ CHUYỆN để hiểu ngữ cảnh User đang bàn luận là gì (ví dụ: đang bàn dở về một nhân vật/sự kiện).
-                    """
+                    context_data = f"KIẾN THỨC NỀN (Vector):\n{vector_context}\n\nLỊCH SỬ CHAT GẦN ĐÂY:\n{chat_memory}"
 
-                # Ghép Prompt cuối cùng
+                # Ghép Prompt
                 full_prompt = f"{context_data}\n\nUSER HỎI:\n{prompt}"
                 
-                # Cấu hình an toàn
-                safe_config_chat = {
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                }
-
+                # Cấu hình AI
+                # Lưu ý: Nhớ đổi tên model nếu ông dùng bản khác (ví dụ 'gemini-1.5-pro')
+                model_chat = genai.GenerativeModel('gemini-3-pro-preview', system_instruction=V_CORE_INSTRUCTION)
+                
                 try:
-                    # Model Chat (Gemini 1.5 Pro hoặc Gemini 3 nếu có)
-                    model_chat = genai.GenerativeModel('gemini-3-pro-preview', system_instruction=V_CORE_INSTRUCTION)
-                    
                     response_stream = model_chat.generate_content(
                         full_prompt, 
-                        safety_settings=safe_config_chat,
                         stream=True, 
                         request_options={'timeout': 600}
                     )
                     
+                    # STREAMING SẠCH (KHÔNG CÓ KÝ TỰ LẠ)
                     for chunk in response_stream:
                         if chunk.text:
                             full_response += chunk.text
-                            response_box.markdown(full_response + "▌")
+                            # Chỉ hiện text, không cộng thêm ký tự con trỏ nào cả
+                            response_box.markdown(full_response)
                     
-                    response_box.markdown(full_response)
-                    
-                    # Debug Context (Ẩn)
-                    with st.expander(f"🔍 Nguồn: {context_source}"):
-                        st.text(context_data[:3000] + "..." if len(context_data) > 3000 else context_data)
-                
+                    # Lưu vào Database
                     supabase.table("chat_history").insert([
                         {"story_id": story_id, "role": "user", "content": prompt},
                         {"story_id": story_id, "role": "model", "content": full_response}
                     ]).execute()
                     
+                    # Debug nguồn (nhỏ gọn bên dưới)
+                    st.caption(f"ℹ️ Dữ liệu trích xuất từ: {context_source}")
+                    
                 except Exception as e:
-                    response_box.error(f"🚫 V bị lỗi: {e}")
+                    response_box.error(f"Lỗi: {e}")
 
 # === TAB 3: QUẢN LÝ BIBLE (TỐI ƯU KHÔNG CHẠY NGẦM) ===
 with tab3:
@@ -590,6 +572,7 @@ with tab3:
 
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
 
 
 
