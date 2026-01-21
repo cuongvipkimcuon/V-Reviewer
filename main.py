@@ -39,20 +39,31 @@ if not supabase:
 cookie_manager = stx.CookieManager()
 
 # --- HÀM LOGIN BẰNG COOKIE (TỰ ĐỘNG) ---
+# --- SỬA LẠI ĐOẠN NÀY ĐỂ HẾT GIẬT ---
 def check_cookie_login():
-    # Cố gắng lấy token từ cookie
+    # Thử lấy cookie
     access_token = cookie_manager.get("supabase_access_token")
     refresh_token = cookie_manager.get("supabase_refresh_token")
     
+    # Mẹo: CookieManager cần 1 nhịp để load. 
+    # Nếu nó trả về None, có thể là do CHƯA LOAD KỊP chứ không phải là KHÔNG CÓ.
+    # Ta dùng cookies (get_all) để check xem Manager đã sẵn sàng chưa.
+    cookies = cookie_manager.get_all()
+    
+    if cookies is None:
+        # Nếu cookies = None nghĩa là component chưa chạy xong -> Dừng lại chờ, KHÔNG hiện Login Form
+        # Hiện cái spinner cho chuyên nghiệp
+        with st.spinner("Đang lục lọi ký ức..."):
+            time.sleep(0.5) # Hack nhẹ: Ngủ 0.5s để chờ cookie về
+            st.stop() # Dừng render, đợi nhịp sau chạy tiếp
+            
     if access_token and refresh_token:
         try:
-            # Bảo Supabase: "Tao có chìa khóa cũ đây, cho tao vào lại"
             session = supabase.auth.set_session(access_token, refresh_token)
             if session:
                 st.session_state.user = session.user
                 return True
-        except Exception as e:
-            # Token hết hạn hoặc lỗi -> Kệ nó, lát bắt đăng nhập lại
+        except:
             pass
     return False
 
@@ -626,6 +637,7 @@ with tab3:
 
         cols_show = ['source_chapter', 'entity_name', 'description', 'created_at'] if 'source_chapter' in df.columns else ['entity_name', 'description', 'created_at']
         st.dataframe(df[cols_show], use_container_width=True, height=500)
+
 
 
 
