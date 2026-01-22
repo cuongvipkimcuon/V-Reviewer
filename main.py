@@ -183,7 +183,7 @@ def crystallize_session(chat_history, persona_role):
     OUTPUT: Trả về tóm tắt súc tích (50-100 từ). Nếu rác, trả về "NO_INFO".
     """
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         res = model.generate_content(crystallize_prompt)
         return res.text.strip()
     except: return "Lỗi AI Filter."
@@ -585,6 +585,20 @@ with tab3:
         )
     else:
         st.info("Không tìm thấy dữ liệu phù hợp.")
+    # 5. DANGER ZONE (XÓA SẠCH LÀM LẠI)
+    st.divider()
+    with st.expander("💀 Danger Zone (Xóa tất cả)"):
+        st.warning("⚠️ CẢNH BÁO: Hành động này sẽ xóa sạch toàn bộ Bible của dự án này. Bạn sẽ cần trích xuất lại từ đầu.")
+        col_dang1, col_dang2 = st.columns([3, 1])
+        with col_dang2:
+            if st.button("💣 Xóa sạch Bible & Reset", type="primary", use_container_width=True):
+                try:
+                    supabase.table("story_bible").delete().eq("story_id", proj_id).execute()
+                    st.success("Đã dọn sạch sẽ!")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Lỗi khi xóa: {e}")
 
 
 
