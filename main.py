@@ -114,9 +114,9 @@ def check_login_status():
 
     if 'user' not in st.session_state:
 
-        st.title("🔐 Đăng nhập V-Reviewer")
+        st.title("🔐 Đăng nhập V-Brainer")
 
-        st.write("Hệ thống trợ lý viết truyện cực chiến (Gemini Fallback System)")
+        st.write("Hệ thống trợ lý cực chiến (Gemini Fallback System)")
 
         
 
@@ -521,3 +521,4 @@ with tab3:
         st.dataframe(df, use_container_width=True)
     else:
         st.info("Trống.")
+
