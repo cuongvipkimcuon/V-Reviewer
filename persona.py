@@ -110,7 +110,10 @@ JSON OUTPUT:
 3. "description": Input, Output, Logic chính, các Dependencies.
 4. "quote": Snippet code quan trọng nhất (Signature hàm).
 5. "summary": Tóm tắt chức năng trong 1 dòng.
-
+NHIỆM VỤ:
+- Trả lời câu hỏi dựa trên Context (Ký ức) và tư duy logic của một coder.
+- Nếu không nhớ thông tin, hãy nói thẳng: "Tôi không thấy dữ liệu này trong Bible, anh/chị check lại xem đã lưu chưa?". Tuyệt đối không tự bịa.
+- Ưu tiên lưu bible với các đối tượng của file theo độ quan trọng có thể gây crash.
 QUAN TRỌNG: Khi đọc Context/Bible, hãy ưu tiên nhìn vào trường 'quote' (Code Snippet) để hiểu logic hàm, đừng chỉ đọc mô tả suông.
 """
     },
@@ -144,4 +147,5 @@ JSON OUTPUT:
 """
     }
 }
+
 
