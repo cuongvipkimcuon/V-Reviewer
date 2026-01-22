@@ -32,7 +32,7 @@ SAFE_CONFIG = {
     HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
-MODEL_PRIORITY = ["gemini-2.0-flash", "gemini-1.5-flash"]
+MODEL_PRIORITY = ["gemini-3-flash-preview","gemini-2.5-flash", "gemini-2.0-flash"]
 
 # --- 2. KHỞI TẠO KẾT NỐI (AN TOÀN) ---
 def init_services():
@@ -328,17 +328,31 @@ with tab1:
                         del st.session_state['extract_json']
                 except Exception as e: st.error(f"Lỗi Format: {e}")
 
-# === TAB 2: SMART CHAT (FIX LỖI HIỂN THỊ RAW OBJECT) ===
+# === TAB 2: SMART CHAT (FIX LỖI CLEAR SCREEN) ===
 with tab2:
     col_left, col_right = st.columns([3, 1])
     
+    # --- CỘT PHẢI: QUẢN LÝ KÝ ỨC ---
     with col_right:
         st.write("### 🧠 Ký ức")
         use_bible = st.toggle("Dùng Bible Context", value=True)
-        if st.button("🧹 Clear Screen"):
-            st.session_state['temp_chat_view'] = [] 
+        
+        # [FIX LOGIC CLEAR SCREEN]
+        # Thay vì xóa DB, ta đặt một mốc thời gian để ẩn tin nhắn cũ
+        if 'chat_cutoff' not in st.session_state:
+            st.session_state['chat_cutoff'] = "1970-01-01" # Mặc định hiện tất cả
+
+        if st.button("🧹 Clear Screen (Dọn màn hình)"):
+            # Đặt mốc cutoff là giờ hiện tại -> Ẩn hết tin cũ
+            st.session_state['chat_cutoff'] = datetime.now().isoformat()
             st.rerun()
         
+        if st.button("🔄 Hiện lại toàn bộ lịch sử"):
+             st.session_state['chat_cutoff'] = "1970-01-01"
+             st.rerun()
+
+        st.divider()
+
         with st.expander("💎 Kết tinh Chat"):
             st.caption("Lưu ý chính vào Bible.")
             crys_option = st.radio("Phạm vi:", ["20 tin gần nhất", "Toàn bộ phiên"])
@@ -369,14 +383,21 @@ with tab2:
                     del st.session_state['crys_summary']
                     st.rerun()
 
+    # --- CỘT TRÁI: CHAT UI ---
     with col_left:
-        # Load History
+        # 1. Load History từ DB
         try:
-            msgs = supabase.table("chat_history").select("*").eq("story_id", proj_id).order("created_at", desc=False).execute().data
-            for m in msgs[-30:]:
+            # Lấy 50 tin gần nhất
+            msgs = supabase.table("chat_history").select("*").eq("story_id", proj_id).order("created_at", desc=False).limit(50).execute().data
+            
+            # [QUAN TRỌNG] Lọc tin nhắn dựa trên mốc 'chat_cutoff'
+            visible_msgs = [m for m in msgs if m['created_at'] > st.session_state['chat_cutoff']]
+            
+            for m in visible_msgs:
                 with st.chat_message(m['role']): st.markdown(m['content'])
         except: pass
 
+        # 2. Xử lý khi User Chat
         if prompt := st.chat_input("Hỏi V..."):
             with st.chat_message("user"): st.markdown(prompt)
             
@@ -399,16 +420,18 @@ with tab2:
                         ctx += f"\n--- BIBLE ---\n{bible_res}\n"
                         note.append("Bible")
 
-                recent = "\n".join([f"{m['role']}: {m['content']}" for m in msgs[-10:]])
+                # Lấy context từ tin nhắn hiển thị gần đây (Visible messages only)
+                # Để AI không bị lẫn lộn với những gì ông đã Clear
+                recent_msgs = [m for m in msgs if m['created_at'] > st.session_state['chat_cutoff']]
+                recent = "\n".join([f"{m['role']}: {m['content']}" for m in recent_msgs[-10:]])
+                
                 ctx += f"\n--- RECENT ---\n{recent}"
                 final = f"CONTEXT:\n{ctx}\n\nUSER: {prompt}"
 
-                # === FIX CHAT STREAM ===
                 try:
                     res_stream = generate_content_with_fallback(final, system_instruction=persona['core_instruction'])
                     
                     with st.chat_message("assistant"):
-                        # Hàm generator để bóc tách text từ object response
                         def stream_parser(stream):
                             for chunk in stream:
                                 if chunk.text: yield chunk.text
@@ -416,13 +439,15 @@ with tab2:
                         full_res = st.write_stream(stream_parser(res_stream))
                         st.caption(f"ℹ️ {', '.join(note) if note else 'Chat Only'}")
                     
-                    # Lưu vào DB (Giờ full_res chắc chắn là string)
+                    # Lưu vào DB
                     if full_res:
                         supabase.table("chat_history").insert([
                             {"story_id": proj_id, "role": "user", "content": str(prompt)},
                             {"story_id": proj_id, "role": "model", "content": str(full_res)}
                         ]).execute()
+                        
                         st.rerun()
+
                 except Exception as e: st.error(f"Lỗi Chat: {e}")
 
 # === TAB 3: BIBLE (FIX LỖI MERGE) ===
@@ -474,4 +499,5 @@ with tab3:
         
         st.dataframe(pd.DataFrame(bible)[['entity_name', 'description']], use_container_width=True)
     else: st.info("Bible trống.")
+
 
