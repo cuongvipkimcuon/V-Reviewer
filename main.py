@@ -439,9 +439,12 @@ with tab2:
 
     # CHAT UI
     with col_left:
-        msgs = supabase.table("chat_history").select("*").eq("story_id", proj_id).order("created_at", desc=False).execute().data
-        for m in msgs[-30:]:
-            with st.chat_message(m['role']): st.markdown(m['content'])
+        # Load tin nhắn cũ
+        try:
+            msgs = supabase.table("chat_history").select("*").eq("story_id", proj_id).order("created_at", desc=False).execute().data
+            for m in msgs[-30:]:
+                with st.chat_message(m['role']): st.markdown(m['content'])
+        except: st.error("Không tải được lịch sử chat.")
 
         if prompt := st.chat_input("Hỏi V..."):
             with st.chat_message("user"): st.markdown(prompt)
@@ -470,11 +473,20 @@ with tab2:
 
                 final = f"CONTEXT:\n{ctx}\n\nUSER: {prompt}"
                 
-                # === SỬA LỖI 1: Đảm bảo full_res là string an toàn trước khi insert ===
                 try:
                     res_stream = generate_content_with_fallback(final, system_instruction=persona['core_instruction'])
+                    
                     with st.chat_message("assistant"):
-                        full_res = st.write_stream(res_stream)
+                        # === PHẦN SỬA QUAN TRỌNG NHẤT Ở ĐÂY ===
+                        # Tạo hàm con để bóc tách text từ cục Gemini
+                        def stream_parser(stream):
+                            for chunk in stream:
+                                if chunk.text:
+                                    yield chunk.text
+                        
+                        # Truyền hàm parser vào write_stream thay vì res_stream thô
+                        full_res = st.write_stream(stream_parser(res_stream))
+                        
                         st.caption(f"ℹ️ {', '.join(note) if note else 'Chat Only'}")
                     
                     if full_res:
@@ -483,8 +495,7 @@ with tab2:
                             {"story_id": proj_id, "role": "model", "content": str(full_res)}
                         ]).execute()
                 except Exception as e:
-                    st.error(f"Lỗi khi chat hoặc lưu lịch sử: {e}")
-
+                    st.error(f"Lỗi khi chat: {e}")
 # === TAB 3: BIBLE MANAGER ===
 with tab3:
     st.subheader("📚 Project Bible")
@@ -537,3 +548,4 @@ with tab3:
         st.dataframe(df, use_container_width=True)
     else:
         st.info("Bible trống.")
+
