@@ -21,7 +21,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] { height: 50px; background-color: #f0f2f6; border-radius: 5px; }
     .stTabs [aria-selected="true"] { background-color: #ff4b4b; color: white; }
-    /* Đã xóa dòng stChatInput để nó hiển thị tự nhiên hơn */
+    /* Đã xóa stChatInput fixed để tránh lỗi giao diện */
     div[data-testid="stExpander"] { background-color: #f8f9fa; border-radius: 10px; border: 1px solid #ddd; }
 </style>
 """, unsafe_allow_html=True)
@@ -33,7 +33,7 @@ SAFE_CONFIG = {
     HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
-MODEL_PRIORITY = ["gemini-3-flash-preview","gemini-2.0-flash", "gemini-1.5-flash"]
+MODEL_PRIORITY = ["gemini-2.0-flash", "gemini-1.5-flash"] # Bỏ model preview cũ
 
 # --- 2. KHỞI TẠO KẾT NỐI (AN TOÀN) ---
 
@@ -82,7 +82,6 @@ def check_login_status():
 
     if 'user' not in st.session_state:
         st.title("🔐 Đăng nhập V-Brainer")
-        st.write("Hệ thống trợ lý cực chiến (Gemini Fallback System)")
         
         col_main, _ = st.columns([1, 1])
         with col_main:
@@ -145,6 +144,9 @@ def generate_content_with_fallback(prompt, system_instruction, stream=True):
     raise Exception("All models failed")
 
 def get_embedding(text):
+    # Thêm kiểm tra an toàn để tránh lỗi ValueError
+    if not text or not isinstance(text, str) or not text.strip():
+        raise ValueError("Cannot embed empty text")
     return genai.embed_content(model="models/text-embedding-004", content=text, task_type="retrieval_document")['embedding']
 
 def smart_search_hybrid(query_text, project_id, top_k=10):
@@ -163,7 +165,6 @@ def smart_search_hybrid(query_text, project_id, top_k=10):
     except: return ""
 
 def ai_router_pro(user_prompt):
-    """Router thông minh: Có cần đọc Chap gốc không?"""
     router_prompt = f"""
     Phân tích User Prompt và trả về JSON:
     1. "intent": "search_bible" OR "chat_casual".
@@ -178,22 +179,14 @@ def ai_router_pro(user_prompt):
     except: return {"intent": "chat_casual", "target_chapter": None}
 
 def crystallize_session(chat_history, persona_role):
-    """Hàm tinh chế Chat thành Memory"""
     chat_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history])
     
     crystallize_prompt = f"""
     Bạn là Thư Ký Ghi Chép ({persona_role}).
     Nhiệm vụ: Đọc đoạn hội thoại sau và LỌC BỎ RÁC (câu chào hỏi, đùa giỡn vô nghĩa).
-    Chỉ giữ lại và TÓM TẮT các thông tin giá trị:
-    1. Các quyết định cốt truyện/kỹ thuật đã chốt.
-    2. Các ý tưởng mới vừa nảy ra.
-    3. Các quy tắc/constraint mới được thiết lập.
-    
-    CHAT LOG:
-    {chat_text}
-    
-    YÊU CẦU OUTPUT:
-    Trả về một đoạn văn tóm tắt súc tích (khoảng 50-100 từ). Nếu không có gì quan trọng, trả về "NO_INFO".
+    Chỉ giữ lại và TÓM TẮT các thông tin giá trị.
+    CHAT LOG: {chat_text}
+    YÊU CẦU OUTPUT: Trả về tóm tắt súc tích (50-100 từ). Nếu không có gì quan trọng, trả về "NO_INFO".
     """
     try:
         model = genai.GenerativeModel("gemini-2.0-flash")
@@ -239,14 +232,13 @@ st.title(f"{persona['icon']} {selected_proj_name}")
 
 tab1, tab2, tab3 = st.tabs(["✍️ Workstation", "💬 Smart Chat & Memory", "📚 Project Bible"])
 
-# === TAB 1: WORKSTATION ===
+# === TAB 1: WORKSTATION (ĐÃ CẬP NHẬT TITLE & META) ===
 with tab1:
     # --- PHẦN 1: LOGIC LOAD DỮ LIỆU (ĐƯA LÊN ĐẦU) ---
     
-    # 1. Lấy danh sách file trước
+    # 1. Lấy danh sách file (bao gồm Title)
     files = supabase.table("chapters").select("chapter_number, title").eq("story_id", proj_id).order("chapter_number").execute()
     
-    # Tạo dictionary map tên hiển thị
     f_opts = {}
     for f in files.data:
         display_name = f"Chương {f['chapter_number']}"
@@ -254,47 +246,47 @@ with tab1:
             display_name += f": {f['title']}"
         f_opts[display_name] = f['chapter_number']
 
-    # 2. HIỂN THỊ SELECT BOX NGAY TẠI ĐÂY (Full Width)
+    # 2. HIỂN THỊ SELECT BOX
     sel_file = st.selectbox("📂 Chọn Chương để làm việc:", ["-- New --"] + list(f_opts.keys()))
     
     # Xác định số chương
     chap_num = f_opts[sel_file] if sel_file != "-- New --" else len(files.data) + 1
     
-    # 3. LOAD CONTENT + TITLE + REVIEW TỪ DB
+    # 3. LOAD TỪ DB (CONTENT, REVIEW_CONTENT, TITLE)
     db_content = ""
     db_review = ""
     db_title = "" 
     
     if sel_file != "-- New --":
         try:
-            # Lấy đúng cột 'review_content' như trong hình database ông gửi
+            # Lấy đúng cột 'review_content' và 'title'
             res = supabase.table("chapters").select("content, review_content, title").eq("story_id", proj_id).eq("chapter_number", chap_num).execute()
             if res.data: 
                 db_content = res.data[0].get('content', '')
-                db_review = res.data[0].get('review_content', '') # Sửa thành review_content
+                db_review = res.data[0].get('review_content', '')
                 db_title = res.data[0].get('title', '')
         except Exception as e:
             st.error(f"Lỗi tải dữ liệu: {e}")
 
-    # Logic đồng bộ Session State (để UI cập nhật ngay khi đổi file)
+    # Sync Session State
     if 'current_chap_view' not in st.session_state or st.session_state['current_chap_view'] != chap_num:
         st.session_state['review_res'] = db_review
         st.session_state['current_chap_view'] = chap_num
 
-    st.divider() # Kẻ 1 đường ngăn cách cho đẹp
+    st.divider()
 
-    # --- PHẦN 2: GIAO DIỆN CHÍNH (CHIA CỘT) ---
+    # --- PHẦN 2: GIAO DIỆN CHÍNH ---
     col_edit, col_tool = st.columns([2, 1])
 
-    # CỘT TRÁI: EDIT CONTENT
+    # CỘT TRÁI: EDIT
     with col_edit:
         # Ô nhập Title
         chap_title = st.text_input("🔖 Tên Chương", value=db_title, placeholder="VD: Sự khởi đầu...")
         
         # Ô nhập Content
-        input_text = st.text_area("Nội dung", value=db_content, height=600, placeholder="Viết truyện vào đây...")
+        input_text = st.text_area("Nội dung", value=db_content, height=600, placeholder="Viết nội dung vào đây...")
         
-        # Nút Lưu (Lưu cả Title + Content)
+        # Nút Lưu (Title + Content)
         if st.button("💾 Lưu Nội Dung & Tên Chương"):
             supabase.table("chapters").upsert({
                 "story_id": proj_id, 
@@ -303,32 +295,32 @@ with tab1:
                 "content": input_text
             }, on_conflict="story_id, chapter_number").execute()
             st.toast("Đã lưu Chương & Nội dung!", icon="✅")
-            time.sleep(1) 
-            st.rerun() # Refresh để cập nhật tên chương trên danh sách
+            time.sleep(0.5) 
+            st.rerun()
 
-    # CỘT PHẢI: CÔNG CỤ (REVIEW)
+    # CỘT PHẢI: TOOLS
     with col_tool:
-        st.write("### 🤖 Review & Extract")
+        st.write("### 🤖 Trợ lý AI")
         
-        # Nút Chạy Review
-        if st.button("🚀 Review Mới (AI)", type="primary"):
+        # 1. REVIEW
+        if st.button("🚀 Review Mới", type="primary"):
             if not input_text: st.warning("Chưa có nội dung!")
             else:
                 with st.status("Đang đọc và nhận xét..."):
                     context = smart_search_hybrid(input_text[:500], proj_id)
-                    final_prompt = f"CONTEXT: {context}\nCONTENT: {input_text}\nTASK: {persona['review_prompt']}"
+                    # Gửi kèm Title cho AI Review
+                    final_prompt = f"TITLE: {chap_title}\nCONTEXT: {context}\nCONTENT: {input_text}\nTASK: {persona['review_prompt']}"
                     
                     res = generate_content_with_fallback(final_prompt, system_instruction=persona['core_instruction'], stream=False)
                     st.session_state['review_res'] = res.text
                     st.rerun()
         
-        # Hiển thị kết quả Review
+        # Hiển thị và Lưu Review
         if 'review_res' in st.session_state and st.session_state['review_res']:
             with st.expander("📝 Kết quả Review", expanded=True):
                 st.markdown(st.session_state['review_res'])
-                
                 st.divider()
-                # Nút Lưu Review (Lưu vào cột review_content)
+                # Lưu vào cột review_content
                 if st.button("💾 Lưu Review này vào DB"):
                     supabase.table("chapters").update({
                         "review_content": st.session_state['review_res']
@@ -337,14 +329,37 @@ with tab1:
 
         st.divider()
         
-        # Phần Extract Bible (Giữ nguyên)
-        if st.button("📥 Trích xuất Bible"):
-            with st.spinner("Extracting..."):
-                ext_prompt = f"CONTENT: {input_text}\nTASK: {persona['extractor_prompt']}"
+        # 2. EXTRACT BIBLE (Tự động tạo [META])
+        if st.button("📥 Trích xuất Bible (Kèm Summary/Docs)"):
+            with st.spinner("Đang phân tích và tổng hợp..."):
+                
+                # --- TẠO YÊU CẦU [META] DỰA TRÊN LOẠI DỰ ÁN ---
+                meta_description = ""
+                if proj_type == "Coder":
+                     meta_description = "Mô tả ngắn gọn 3 ý: 1. MỤC ĐÍCH: File này giải quyết bài toán gì? 2. THÀNH PHẦN CHÍNH: Liệt kê các hàm/class quan trọng. 3. INPUT/OUTPUT CHÍNH."
+                else: # Writer
+                     meta_description = "Mô tả ngắn gọn 3 ý: 1. MỤC ĐÍCH: Chương này đóng vai trò gì trong cốt truyện? 2. DIỄN BIẾN CHÍNH: Tóm tắt các sự kiện quan trọng. 3. KẾT QUẢ: Tình trạng nhân vật/cốt truyện sau chương này."
+
+                extra_req = f"""
+                YÊU CẦU BỔ SUNG BẮT BUỘC (QUAN TRỌNG NHẤT):
+                Hãy thêm vào đầu danh sách JSON một mục đặc biệt tổng hợp toàn bộ nội dung này:
+                - entity_name: "[META] {chap_title if chap_title else f'Chương {chap_num}'}"
+                - type: "Overview"
+                - description: "{meta_description}"
+                """
+
+                # Gộp vào Prompt
+                ext_prompt = f"""
+                TITLE: {chap_title}
+                CONTENT: {input_text}
+                TASK: {persona['extractor_prompt']}
+                {extra_req}
+                """
+
                 try:
                     res = generate_content_with_fallback(ext_prompt, system_instruction="JSON Only", stream=False)
                     st.session_state['extract_json'] = res.text
-                except: st.error("AI Error")
+                except: st.error("AI Error trong quá trình trích xuất.")
 
         if 'extract_json' in st.session_state:
             with st.expander("Preview Save", expanded=True):
@@ -352,16 +367,17 @@ with tab1:
                     clean = st.session_state['extract_json'].replace("```json", "").replace("```", "").strip()
                     data = json.loads(clean)
                     st.dataframe(pd.DataFrame(data)[['entity_name', 'type', 'description']], hide_index=True)
-                    if st.button("💾 Save to Bible"):
+                    if st.button("💾 Save all to Bible"):
                         for item in data:
-                            vec = get_embedding(f"{item.get('description')} {item.get('quote')}")
+                            # Embedding và lưu
+                            vec = get_embedding(f"{item.get('description')} {item.get('quote', '')}")
                             supabase.table("story_bible").insert({
                                 "story_id": proj_id, "entity_name": item['entity_name'],
                                 "description": item['description'], "embedding": vec, "source_chapter": chap_num
                             }).execute()
-                        st.success("Saved!")
+                        st.success("Đã lưu vào Bible!")
                         del st.session_state['extract_json']
-                except: st.error("Format Error")
+                except Exception as e: st.error(f"Lỗi định dạng JSON hoặc Embedding: {e}")
 
 # === TAB 2: SMART CHAT & MEMORY ===
 with tab2:
@@ -371,12 +387,12 @@ with tab2:
         st.write("### 🧠 Quản lý Ký ức")
         use_bible = st.toggle("Dùng Bible Context", value=True)
         if st.button("🧹 Clear Screen"):
-            st.session_state['temp_chat_view'] = [] # Chỉ xóa view, ko xóa DB
+            st.session_state['temp_chat_view'] = [] 
             st.rerun()
             
         st.divider()
         
-        # --- FEATURE MỚI: CRYSTALLIZE SESSION ---
+        # --- CRYSTALLIZE SESSION ---
         with st.expander("💎 Kết tinh Phiên Chat", expanded=True):
             st.caption("AI sẽ lọc bỏ câu thừa, chỉ lưu ý chính vào Bible.")
             crys_option = st.radio("Phạm vi:", ["20 tin gần nhất", "Toàn bộ phiên này"])
@@ -385,7 +401,6 @@ with tab2:
             if st.button("✨ Kết tinh & Lưu"):
                 limit = 20 if crys_option == "20 tin gần nhất" else 100
                 chat_data = supabase.table("chat_history").select("*").eq("story_id", proj_id).order("created_at", desc=True).limit(limit).execute().data
-                # Đảo lại cho đúng thứ tự thời gian
                 chat_data.reverse()
                 
                 if not chat_data:
@@ -397,30 +412,30 @@ with tab2:
                         if summary == "NO_INFO":
                             st.warning("AI thấy phiên chat này toàn rác, không có gì đáng lưu.")
                         else:
-                            # Hiện bản nháp cho User sửa
                             st.session_state['crys_summary'] = summary
                             st.session_state['crys_topic'] = memory_topic if memory_topic else f"Chat Memory {datetime.now().strftime('%Y-%m-%d')}"
 
-    # Khu vực Confirm lưu Memory (Hiện ra khi AI đã tóm tắt xong)
+    # Confirm lưu Memory
     if 'crys_summary' in st.session_state:
         with col_right:
             st.success("AI đã tóm tắt xong!")
             final_summary = st.text_area("Hiệu chỉnh lần cuối:", value=st.session_state['crys_summary'], height=150)
             if st.button("💾 Xác nhận Lưu vào Bible"):
-                vec = get_embedding(final_summary)
-                # Lưu vào Bible với Entity Name đặc biệt
-                ent_name = f"[CHAT] {st.session_state['crys_topic']}"
-                supabase.table("story_bible").insert({
-                    "story_id": proj_id,
-                    "entity_name": ent_name,
-                    "description": final_summary,
-                    "embedding": vec,
-                    "source_chapter": 0 # 0 đánh dấu là Meta Data/Chat
-                }).execute()
-                st.toast("Đã nạp ký ức vào Bible!", icon="🧠")
-                del st.session_state['crys_summary']
-                del st.session_state['crys_topic']
-                st.rerun()
+                try:
+                    vec = get_embedding(final_summary)
+                    ent_name = f"[CHAT] {st.session_state['crys_topic']}"
+                    supabase.table("story_bible").insert({
+                        "story_id": proj_id,
+                        "entity_name": ent_name,
+                        "description": final_summary,
+                        "embedding": vec,
+                        "source_chapter": 0 
+                    }).execute()
+                    st.toast("Đã nạp ký ức vào Bible!", icon="🧠")
+                    del st.session_state['crys_summary']
+                    del st.session_state['crys_topic']
+                    st.rerun()
+                except Exception as e: st.error(f"Lỗi lưu memory: {e}")
 
     # CHAT UI
     with col_left:
@@ -432,14 +447,12 @@ with tab2:
             with st.chat_message("user"): st.markdown(prompt)
             
             with st.spinner("Thinking..."):
-                # 1. Router Check (Chap gốc?)
                 route = ai_router_pro(prompt)
                 target_chap = route.get('target_chapter')
                 
                 ctx = ""
                 note = []
                 
-                # 2. Build Context
                 if target_chap:
                     c_res = supabase.table("chapters").select("content").eq("story_id", proj_id).eq("chapter_number", target_chap).execute()
                     if c_res.data: 
@@ -447,28 +460,30 @@ with tab2:
                         note.append(f"Read Chap {target_chap}")
                 
                 if use_bible:
-                    # Search cả kiến thức Chat Memory cũ (vì nó đã nằm trong Bible rồi)
                     bible_res = smart_search_hybrid(prompt, proj_id)
                     if bible_res: 
                         ctx += f"\n--- BIBLE & MEMORY ---\n{bible_res}\n"
                         note.append("Bible")
 
-                # Chat gần đây (Short-term)
                 recent = "\n".join([f"{m['role']}: {m['content']}" for m in msgs[-10:]])
                 ctx += f"\n--- RECENT ---\n{recent}"
 
-                # 3. Generate
                 final = f"CONTEXT:\n{ctx}\n\nUSER: {prompt}"
-                res_stream = generate_content_with_fallback(final, system_instruction=persona['core_instruction'])
                 
-                with st.chat_message("assistant"):
-                    full_res = st.write_stream(res_stream)
-                    st.caption(f"ℹ️ {', '.join(note) if note else 'Chat Only'}")
-                
-                supabase.table("chat_history").insert([
-                    {"story_id": proj_id, "role": "user", "content": prompt},
-                    {"story_id": proj_id, "role": "model", "content": full_res}
-                ]).execute()
+                # === SỬA LỖI 1: Đảm bảo full_res là string an toàn trước khi insert ===
+                try:
+                    res_stream = generate_content_with_fallback(final, system_instruction=persona['core_instruction'])
+                    with st.chat_message("assistant"):
+                        full_res = st.write_stream(res_stream)
+                        st.caption(f"ℹ️ {', '.join(note) if note else 'Chat Only'}")
+                    
+                    if full_res:
+                        supabase.table("chat_history").insert([
+                            {"story_id": proj_id, "role": "user", "content": str(prompt)},
+                            {"story_id": proj_id, "role": "model", "content": str(full_res)}
+                        ]).execute()
+                except Exception as e:
+                    st.error(f"Lỗi khi chat hoặc lưu lịch sử: {e}")
 
 # === TAB 3: BIBLE MANAGER ===
 with tab3:
@@ -478,7 +493,6 @@ with tab3:
     bible = supabase.table("story_bible").select("*").eq("story_id", proj_id).order("created_at", desc=True).execute().data
     
     if bible:
-        # Multi-select
         opts = {f"{b['entity_name']}": b for b in bible}
         selections = st.multiselect("Chọn mục để GỘP/XÓA:", opts.keys())
         
@@ -487,7 +501,7 @@ with tab3:
             ids = [opts[k]['id'] for k in selections]
             supabase.table("story_bible").delete().in_("id", ids).execute()
             st.success("Đã xóa!")
-            time.sleep(1)
+            time.sleep(0.5)
             st.rerun()
             
         if c2.button("🧬 Gộp (AI Merge)"):
@@ -495,25 +509,31 @@ with tab3:
             else:
                 items = [opts[k] for k in selections]
                 txt = "\n".join([f"- {i['description']}" for i in items])
-                prompt_merge = f"Gộp các mục sau thành 1:\n{txt}"
-                res = generate_content_with_fallback(prompt_merge, system_instruction="Merge Expert", stream=False)
+                prompt_merge = f"Gộp các mục sau thành 1 nội dung duy nhất, súc tích:\n{txt}"
                 
-                vec = get_embedding(res.text)
-                supabase.table("story_bible").insert({
-                    "story_id": proj_id, "entity_name": items[0]['entity_name'],
-                    "description": res.text, "embedding": vec, "source_chapter": items[0]['source_chapter']
-                }).execute()
+                # === SỬA LỖI 2: Kiểm tra kết quả AI trước khi embedding ===
+                try:
+                    res = generate_content_with_fallback(prompt_merge, system_instruction="Merge Expert", stream=False)
+                    merged_text = res.text
+                    
+                    if not merged_text or not merged_text.strip():
+                        st.error("AI trả về kết quả rỗng, không thể gộp.")
+                    else:
+                        vec = get_embedding(merged_text)
+                        supabase.table("story_bible").insert({
+                            "story_id": proj_id, "entity_name": items[0]['entity_name'], # Lấy tên mục đầu tiên làm tên mới
+                            "description": merged_text, "embedding": vec, "source_chapter": items[0]['source_chapter']
+                        }).execute()
+                        
+                        ids = [i['id'] for i in items]
+                        supabase.table("story_bible").delete().in_("id", ids).execute()
+                        st.success("Gộp xong!")
+                        time.sleep(0.5)
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Lỗi khi gộp: {e}")
                 
-                ids = [i['id'] for i in items]
-                supabase.table("story_bible").delete().in_("id", ids).execute()
-                st.success("Gộp xong!")
-                st.rerun()
-                
-        # Hiển thị bảng (Highlight dòng Chat Memory)
         df = pd.DataFrame(bible)[['entity_name', 'description', 'source_chapter']]
         st.dataframe(df, use_container_width=True)
     else:
-        st.info("Trống.")
-
-
-
+        st.info("Bible trống.")
