@@ -21,7 +21,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] { height: 50px; background-color: #f0f2f6; border-radius: 5px; }
     .stTabs [aria-selected="true"] { background-color: #ff4b4b; color: white; }
-    .stChatInput { position: fixed; bottom: 0; }
+    /* Đã xóa dòng stChatInput để nó hiển thị tự nhiên hơn */
     div[data-testid="stExpander"] { background-color: #f8f9fa; border-radius: 10px; border: 1px solid #ddd; }
 </style>
 """, unsafe_allow_html=True)
@@ -244,47 +244,63 @@ with tab1:
     col_edit, col_tool = st.columns([2, 1])
     
     # 1. LẤY DANH SÁCH FILE
+    # Lấy thêm title để hiển thị trên dropdown cho đẹp (nếu muốn)
     files = supabase.table("chapters").select("chapter_number, title").eq("story_id", proj_id).order("chapter_number").execute()
-    f_opts = {f"File {f['chapter_number']}": f['chapter_number'] for f in files.data}
+    
+    # Tạo dictionary để map lựa chọn
+    f_opts = {}
+    for f in files.data:
+        # Hiển thị: "Chương 1: Tên chương" (nếu có tên)
+        display_name = f"Chương {f['chapter_number']}"
+        if f['title']:
+            display_name += f": {f['title']}"
+        f_opts[display_name] = f['chapter_number']
+
     sel_file = st.selectbox("Chọn File", ["-- New --"] + list(f_opts.keys()))
     
     # Xác định số chương
     chap_num = f_opts[sel_file] if sel_file != "-- New --" else len(files.data) + 1
     
-    # 2. LOAD DỮ LIỆU TỪ DB (CONTENT + REVIEW_CONTENT)
-    # Biến để hứng dữ liệu
+    # 2. LOAD DỮ LIỆU TỪ DB (CONTENT + REVIEW + TITLE)
     db_content = ""
     db_review = ""
+    db_title = "" # Biến hứng title
     
     if sel_file != "-- New --":
-        # Lấy cả content và review_content từ DB
         try:
-            # === SỬA TÊN CỘT Ở ĐÂY ===
-            res = supabase.table("chapters").select("content, review_content").eq("story_id", proj_id).eq("chapter_number", chap_num).execute()
+            # === LẤY THÊM CỘT title ===
+            res = supabase.table("chapters").select("content, review_content, title").eq("story_id", proj_id).eq("chapter_number", chap_num).execute()
             if res.data: 
                 db_content = res.data[0].get('content', '')
-                # === SỬA TÊN CỘT Ở ĐÂY ===
                 db_review = res.data[0].get('review_content', '') 
+                db_title = res.data[0].get('title', '') # Lấy title về
         except Exception as e:
             st.error(f"Lỗi tải dữ liệu: {e}")
 
-    # Logic đồng bộ Session State cho Review
+    # Logic đồng bộ Session State
     if 'current_chap_view' not in st.session_state or st.session_state['current_chap_view'] != chap_num:
         st.session_state['review_res'] = db_review
         st.session_state['current_chap_view'] = chap_num
 
     # 3. CỘT EDIT CONTENT
     with col_edit:
+        # === Ô NHẬP TÊN CHƯƠNG ===
+        chap_title = st.text_input("🔖 Tên Chương", value=db_title, placeholder="VD: Sự khởi đầu...")
+        
         input_text = st.text_area("Nội dung", value=db_content, height=600, placeholder="Viết gì đó đi...")
         
-        # Nút Lưu Content (Chỉ update content)
-        if st.button("💾 Lưu Nội Dung (Content Only)"):
+        # Nút Lưu Content & Title
+        if st.button("💾 Lưu Nội Dung & Tên Chương"):
             supabase.table("chapters").upsert({
                 "story_id": proj_id, 
                 "chapter_number": chap_num, 
+                "title": chap_title,   # === LƯU TITLE ===
                 "content": input_text
             }, on_conflict="story_id, chapter_number").execute()
-            st.toast("Đã lưu nội dung!", icon="✅")
+            st.toast("Đã lưu Chương & Nội dung!", icon="✅")
+            # Trick nhỏ: Chờ 1s rồi reload để cập nhật tên trên Dropdown
+            time.sleep(1) 
+            st.rerun()
 
     # 4. CỘT CÔNG CỤ (REVIEW & EXTRACT)
     with col_tool:
@@ -298,7 +314,6 @@ with tab1:
                     context = smart_search_hybrid(input_text[:500], proj_id)
                     final_prompt = f"CONTEXT: {context}\nCONTENT: {input_text}\nTASK: {persona['review_prompt']}"
                     
-                    # Gọi AI (stream=False để lấy text ngay)
                     res = generate_content_with_fallback(final_prompt, system_instruction=persona['core_instruction'], stream=False)
                     st.session_state['review_res'] = res.text
                     st.rerun()
@@ -308,10 +323,8 @@ with tab1:
             with st.expander("📝 Kết quả Review", expanded=True):
                 st.markdown(st.session_state['review_res'])
                 
-                # --- NÚT SAVE REVIEW RIÊNG BIỆT ---
                 st.divider()
                 if st.button("💾 Lưu Review này vào DB"):
-                    # === SỬA TÊN CỘT Ở ĐÂY THÀNH review_content ===
                     supabase.table("chapters").update({
                         "review_content": st.session_state['review_res']
                     }).eq("story_id", proj_id).eq("chapter_number", chap_num).execute()
@@ -496,4 +509,5 @@ with tab3:
         st.dataframe(df, use_container_width=True)
     else:
         st.info("Trống.")
+
 
