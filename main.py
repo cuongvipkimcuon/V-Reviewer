@@ -160,10 +160,14 @@ def smart_search_hybrid(query_text, project_id, top_k=15):
     except: return ""
 
 def ai_router_pro(user_prompt):
+    # Sửa prompt để AI linh hoạt hơn
     router_prompt = f"""
     Phân tích User Prompt và trả về JSON:
-    1. "intent": "search_bible" OR "chat_casual".
-    2. "target_chapter": Số File cần đọc (Int/Null).
+    1. "intent": "search_bible" (Nếu cần kiến thức cũ/quy định) OR "chat_casual".
+    2. "target_chapter": Chương cần đọc.
+       - Nếu user nói số (VD: chương 1) -> Trả về số (Int).
+       - Nếu user nói tên (VD: chương mở đầu) -> Trả về từ khóa tên (String).
+       - Nếu không rõ -> Null.
     USER: "{user_prompt}"
     JSON OUTPUT ONLY.
     """
@@ -172,7 +176,6 @@ def ai_router_pro(user_prompt):
         res = model.generate_content(router_prompt, generation_config={"response_mime_type": "application/json"})
         return json.loads(res.text)
     except: return {"intent": "chat_casual", "target_chapter": None}
-
 def crystallize_session(chat_history, persona_role):
     chat_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history])
     crystallize_prompt = f"""
@@ -418,18 +421,29 @@ with tab2:
                     current_system_instruction += relax_prompt
 
                 # --- B. CONTEXT BUILDING ---
-                route = ai_router_pro(prompt)
-                target_chap = route.get('target_chapter')
-                ctx = ""
-                note = []
-                bible_found_count = 0 # Đếm số lượng bible tìm được
+                target = route.get('target_chapter')
                 
-                # Context 1: Chapter cụ thể
-                if target_chap:
-                    c = supabase.table("chapters").select("content").eq("story_id", proj_id).eq("chapter_number", target_chap).execute()
-                    if c.data: 
-                        ctx += f"\n--- CHAP {target_chap} ---\n{c.data[0]['content']}\n"
-                        note.append(f"Read Chap {target_chap}")
+                if target:
+                    # Logic tìm chương thông minh (Số hoặc Tên)
+                    query = supabase.table("chapters").select("content, chapter_number, title").eq("story_id", proj_id)
+                    
+                    if isinstance(target, int) or (isinstance(target, str) and target.isdigit()):
+                        # Nếu là số -> Tìm theo chapter_number
+                        query = query.eq("chapter_number", int(target))
+                    else:
+                        # Nếu là chữ -> Tìm theo title (dùng ilike để tìm gần đúng)
+                        query = query.ilike("title", f"%{target}%")
+                    
+                    c = query.execute()
+                    
+                    if c.data:
+                        # Lấy chương đầu tiên tìm được
+                        chap_data = c.data[0]
+                        ctx += f"\n--- CHAP {chap_data['chapter_number']}: {chap_data['title']} ---\n{chap_data['content']}\n"
+                        note.append(f"Read Chap {chap_data['chapter_number']}")
+                    else:
+                        # Nếu tìm không thấy thì báo nhẹ 1 câu
+                        note.append(f"Not found chap '{target}'")
                 
                 # Context 2: Bible (Chỉ chạy khi bật Toggle)
                 if use_bible:
@@ -637,6 +651,7 @@ with tab3:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Lỗi khi xóa: {e}")
+
 
 
 
