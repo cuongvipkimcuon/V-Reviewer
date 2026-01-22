@@ -331,21 +331,19 @@ with tab1:
                         del st.session_state['extract_json']
                 except Exception as e: st.error(f"Lỗi Format: {e}")
 
-# === TAB 2: SMART CHAT (ĐÃ NÂNG CẤP LOGIC BIBLE) ===
+# === TAB 2: SMART CHAT (FIX LỖI ROUTE) ===
 with tab2:
     col_left, col_right = st.columns([3, 1])
     
     # --- CỘT PHẢI: QUẢN LÝ KÝ ỨC ---
     with col_right:
         st.write("### 🧠 Ký ức")
-        # [UPDATE 1] Thêm tooltip để hiểu rõ chức năng nút này
         use_bible = st.toggle(
             "Dùng Bible Context", 
             value=True,
             help="🟢 BẬT: AI sẽ soi mói, check logic với dữ liệu cũ.\n⚪ TẮT: AI sẽ sáng tạo tự do, bỏ qua logic cũ (Brainstorm)."
         )
         
-        # [FIX LOGIC CLEAR SCREEN]
         if 'chat_cutoff' not in st.session_state:
             st.session_state['chat_cutoff'] = "1970-01-01" 
 
@@ -391,26 +389,23 @@ with tab2:
 
     # --- CỘT TRÁI: CHAT UI ---
     with col_left:
-        # 1. Load History từ DB
+        # 1. Load History
         try:
             msgs = supabase.table("chat_history").select("*").eq("story_id", proj_id).order("created_at", desc=False).limit(50).execute().data
-            # Lọc tin nhắn theo cutoff
             visible_msgs = [m for m in msgs if m['created_at'] > st.session_state['chat_cutoff']]
             for m in visible_msgs:
                 with st.chat_message(m['role']): st.markdown(m['content'])
         except: pass
 
-        # 2. Xử lý khi User Chat
+        # 2. Xử lý Chat
         if prompt := st.chat_input("Hỏi V..."):
             with st.chat_message("user"): st.markdown(prompt)
             
             with st.spinner("V đang suy nghĩ..."):
-                # --- A. XỬ LÝ SYSTEM INSTRUCTION ĐỘNG ---
-                # [UPDATE 2] Logic xử lý mâu thuẫn khi tắt Bible
+                # --- A. XỬ LÝ SYSTEM INSTRUCTION ---
                 current_system_instruction = persona['core_instruction']
                 
                 if not use_bible:
-                    # Tiêm thuốc lú: Yêu cầu AI bỏ qua luật lệ cũ để sáng tạo
                     relax_prompt = """
                     \n\n[SYSTEM OVERRIDE: BRAINSTORM MODE ACTIVE]
                     1. Người dùng đang TẮT truy cập Ký ức (Bible).
@@ -421,51 +416,54 @@ with tab2:
                     current_system_instruction += relax_prompt
 
                 # --- B. CONTEXT BUILDING ---
+                
+                # [QUAN TRỌNG] Dòng này bị thiếu nên mới lỗi NameError
+                route = ai_router_pro(prompt) 
+                
+                # Lấy target (số hoặc tên chương)
                 target = route.get('target_chapter')
                 
+                ctx = ""
+                note = []
+                bible_found_count = 0 
+                
+                # Context 1: Tìm Chapter thông minh (Số hoặc Tên)
                 if target:
-                    # Logic tìm chương thông minh (Số hoặc Tên)
                     query = supabase.table("chapters").select("content, chapter_number, title").eq("story_id", proj_id)
                     
+                    # Logic kiểm tra số hay chữ
                     if isinstance(target, int) or (isinstance(target, str) and target.isdigit()):
-                        # Nếu là số -> Tìm theo chapter_number
                         query = query.eq("chapter_number", int(target))
                     else:
-                        # Nếu là chữ -> Tìm theo title (dùng ilike để tìm gần đúng)
                         query = query.ilike("title", f"%{target}%")
                     
                     c = query.execute()
                     
                     if c.data:
-                        # Lấy chương đầu tiên tìm được
                         chap_data = c.data[0]
                         ctx += f"\n--- CHAP {chap_data['chapter_number']}: {chap_data['title']} ---\n{chap_data['content']}\n"
                         note.append(f"Read Chap {chap_data['chapter_number']}")
                     else:
-                        # Nếu tìm không thấy thì báo nhẹ 1 câu
                         note.append(f"Not found chap '{target}'")
                 
-                # Context 2: Bible (Chỉ chạy khi bật Toggle)
+                # Context 2: Bible
                 if use_bible:
                     bible_res = smart_search_hybrid(prompt, proj_id)
                     
-                    # --- [START DEBUG BLOCK] ---
-                    # Thêm cái này để soi xem nó tìm được gì
+                    # DEBUG BLOCK
                     with st.expander("🕵️ [DEBUG] Soi kết quả tìm kiếm Bible"):
                         if bible_res:
                             st.success("✅ Tìm thấy dữ liệu:")
                             st.code(bible_res)
                         else:
-                            st.error("❌ Không tìm thấy gì (bible_res rỗng)!")
-                            st.caption("Nguyên nhân: Có thể do ngưỡng match_threshold quá cao hoặc query không khớp.")
-                    # --- [END DEBUG BLOCK] ---
+                            st.warning("⚠️ Không tìm thấy gì (hoặc threshold quá cao)")
 
                     if bible_res: 
                         ctx += f"\n--- BIBLE (Ký ức liên quan) ---\n{bible_res}\n"
                         note.append("Bible Context")
                         bible_found_count = bible_res.count("- [")
 
-                # Context 3: Recent Chat (Chỉ lấy tin sau mốc cutoff)
+                # Context 3: Recent Chat
                 recent_msgs = [m for m in msgs if m['created_at'] > st.session_state['chat_cutoff']]
                 recent = "\n".join([f"{m['role']}: {m['content']}" for m in recent_msgs[-10:]])
                 
@@ -473,11 +471,9 @@ with tab2:
                 final_prompt = f"CONTEXT:\n{ctx}\n\nUSER: {prompt}"
 
                 try:
-                    # Gọi AI với Instruction động
                     res_stream = generate_content_with_fallback(final_prompt, system_instruction=current_system_instruction)
                     
                     with st.chat_message("assistant"):
-                        # [UPDATE 3] Hiển thị trạng thái đang đọc Bible (Visual Feedback)
                         if use_bible and bible_found_count > 0:
                             st.caption(f"👀 *Đã tìm thấy {bible_found_count} dữ liệu liên quan trong Bible...*")
                         elif not use_bible:
@@ -489,10 +485,8 @@ with tab2:
                         
                         full_res = st.write_stream(stream_parser(res_stream))
                         
-                        # Footer note nhỏ
                         if note: st.caption(f"ℹ️ Sources: {', '.join(note)}")
                     
-                    # Lưu vào DB
                     if full_res:
                         supabase.table("chat_history").insert([
                             {"story_id": proj_id, "role": "user", "content": str(prompt)},
@@ -501,7 +495,6 @@ with tab2:
                         st.rerun()
 
                 except Exception as e: st.error(f"Lỗi Chat: {e}")
-
 # === TAB 3: BIBLE (CẬP NHẬT: THÊM/SỬA/SEARCH/MERGE) ===
 with tab3:
     st.subheader("📚 Project Bible Manager")
@@ -651,6 +644,7 @@ with tab3:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Lỗi khi xóa: {e}")
+
 
 
 
