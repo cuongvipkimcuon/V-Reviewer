@@ -252,7 +252,7 @@ def ai_router_pro_v2(user_prompt, chat_history_text):
     
     PHÂN LOẠI INTENT:
     1. "read_full_content": Khi user muốn "Sửa", "Refactor", "Review", "So sánh", "Viết tiếp", "Kiểm tra code/văn" -> Cần đọc NGUYÊN VĂN FILE.
-    2. "search_bible": Khi user hỏi thông tin chung, quy định, cốt truyện tóm tắt, tra cứu khái niệm -> Tra cứu Bible (Vector).
+    2. "search_bible": Khi user hỏi thông tin chung, quy định, tóm tắt, tra cứu khái niệm, hay dùng từ khóa "Bible" -> Tra cứu Bible (Vector).
     3. "chat_casual": Chào hỏi, chém gió không cần context.
     
     OUTPUT JSON ONLY:
@@ -879,6 +879,7 @@ with tab3:
                 time.sleep(1)
                 st.rerun()
             except Exception as e: st.error(f"Lỗi: {e}")
+
 
 
 
