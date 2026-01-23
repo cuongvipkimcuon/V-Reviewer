@@ -266,22 +266,35 @@ def get_mandatory_rules(project_id):
     except: return ""
 
 def extract_rule_raw(user_prompt, ai_response):
-    """Trích xuất luật thô từ hội thoại"""
+    """Trích xuất luật thô từ hội thoại (Đã nâng cấp độ nhạy)"""
     prompt = f"""
-    Dựa vào hội thoại này, User có đang đưa ra một QUY TẮC (Instruction/Preference) mới không?
-    User: "{user_prompt}"
-    AI: "{ai_response}"
+    Bạn là "Rule Extractor". Nhiệm vụ: Phát hiện User Preference qua hội thoại.
     
-    Nếu CÓ (VD: "Đừng dùng list, dùng table", "Code phải có comment", "Nhân vật A lạnh lùng hơn"), hãy trích xuất.
-    Nếu KHÔNG (chỉ là chat bình thường), trả về "NO_RULE".
+    HỘI THOẠI:
+    - User: "{user_prompt}"
+    - AI: (Phản hồi trước đó...)
+    
+    HÃY PHÂN TÍCH XEM USER CÓ ĐANG:
+    1. Phàn nàn về độ dài/phong cách (VD: "dài quá", "nói ít thôi", "đừng giải thích").
+    2. Đưa ra format bắt buộc (VD: "chỉ code thôi", "dùng JSON").
+    3. Sửa lưng AI (VD: "sai rồi", "phải làm thế này").
+    
+    NẾU CÓ, hãy trích xuất thành 1 QUY TẮC NGẮN GỌN (Mệnh lệnh thức).
+    Ví dụ: 
+    - Input: "Nói nhiều quá, code thôi" -> Rule: "Khi user hỏi code -> Chỉ đưa Code Block, không giải thích dài dòng."
+    
+    NẾU KHÔNG (chỉ là chat tiếp, hỏi thêm, cảm ơn), trả về "NO_RULE".
     
     Output Text Only.
     """
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         res = model.generate_content(prompt)
         text = res.text.strip()
-        return text if "NO_RULE" not in text else None
+        # Lọc thêm 1 lớp cho chắc
+        if "NO_RULE" in text or len(text) < 5: 
+            return None
+        return text
     except: return None
 
 def analyze_rule_conflict(new_rule_content, project_id):
@@ -765,3 +778,4 @@ with tab3:
                 time.sleep(1)
                 st.rerun()
             except Exception as e: st.error(f"Lỗi: {e}")
+
