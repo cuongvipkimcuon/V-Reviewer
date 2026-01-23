@@ -126,21 +126,28 @@ def check_login_status():
 
 check_login_status()
 
-# --- SIDEBAR (ĐOẠN CODE ĐÃ SỬA LỖI DUPLICATE KEY) ---
+# --- SIDEBAR (PHIÊN BẢN AN TOÀN TUYỆT ĐỐI) ---
 with st.sidebar:
     if 'user' in st.session_state:
         st.info(f"👤 {st.session_state.user.email}")
         
         if st.button("🚪 Đăng xuất", use_container_width=True):
-            # [FIX LỖI HERE] Thêm key="..." khác nhau cho mỗi dòng
-            cookie_manager.delete("supabase_access_token", key="logout_access_token")
-            cookie_manager.delete("supabase_refresh_token", key="logout_refresh_token")
+            # 1. Xóa Cookie (Bọc trong try-except để không crash nếu cookie không tồn tại)
+            try:
+                cookie_manager.delete("supabase_access_token", key="logout_access_token")
+            except (KeyError, Exception):
+                pass # Không có cookie thì thôi, càng tốt
+            
+            try:
+                cookie_manager.delete("supabase_refresh_token", key="logout_refresh_token")
+            except (KeyError, Exception):
+                pass 
             
             # 2. Sign out Supabase
             try: supabase.auth.sign_out()
             except: pass
             
-            # 3. Xóa Session State (Chỉ xóa key user)
+            # 3. Xóa Session State
             keys_to_remove = ['user', 'cookie_check_done']
             for key in keys_to_remove:
                 if key in st.session_state:
@@ -148,7 +155,7 @@ with st.sidebar:
             
             # 4. Thông báo & Rerun
             st.warning("Đang đăng xuất...")
-            time.sleep(1) 
+            time.sleep(1)
             st.rerun()
 
 # ==========================================
@@ -853,6 +860,7 @@ with tab3:
                 time.sleep(1)
                 st.rerun()
             except Exception as e: st.error(f"Lỗi: {e}")
+
 
 
 
