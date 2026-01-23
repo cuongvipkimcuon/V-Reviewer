@@ -205,10 +205,13 @@ def crystallize_session(chat_history, persona_role):
     OUTPUT: Trả về tóm tắt súc tích (50-100 từ). Nếu rác, trả về "NO_INFO".
     """
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        res = model.generate_content(crystallize_prompt)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        res = model.generate_content(crystallize_prompt,safety_settings=SAFE_CONFIG)
         return res.text.strip()
-    except: return "Lỗi AI Filter."
+    except Exception as e: 
+        # In lỗi ra terminal/console để dễ debug hơn là chỉ báo chung chung
+        print(f"Lỗi Crystal: {e}") 
+        return f"Lỗi AI: {e}" # Hoặc giữ "Lỗi AI Filter." nếu muốn UI gọn
 
 # --- B. SEARCH LOGIC (HYBRID) ---
 def smart_search_hybrid_raw(query_text, project_id, top_k=10):
@@ -860,6 +863,7 @@ with tab3:
                 time.sleep(1)
                 st.rerun()
             except Exception as e: st.error(f"Lỗi: {e}")
+
 
 
 
