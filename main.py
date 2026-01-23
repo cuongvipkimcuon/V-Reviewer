@@ -103,12 +103,12 @@ def check_login_status():
                     res = supabase.auth.sign_in_with_password({"email": email, "password": password})
                     st.session_state.user = res.user
                     
-                    # Set cookie
-                    cookie_manager.set("supabase_access_token", res.session.access_token)
-                    cookie_manager.set("supabase_refresh_token", res.session.refresh_token)
+                    # [FIX LỖI HERE] Thêm key riêng biệt cho mỗi lần set cookie
+                    cookie_manager.set("supabase_access_token", res.session.access_token, key="set_access_token")
+                    cookie_manager.set("supabase_refresh_token", res.session.refresh_token, key="set_refresh_token")
                     
-                    st.success("Thành công! Đang vào...")
-                    time.sleep(1.5) # Giảm thời gian chờ xuống 1.5s là đủ
+                    st.success("Thành công! Đang chuyển hướng...")
+                    time.sleep(1.5) 
                     st.rerun()
                 except Exception as e:
                     st.error(f"Lỗi: {e}")
@@ -860,6 +860,7 @@ with tab3:
                 time.sleep(1)
                 st.rerun()
             except Exception as e: st.error(f"Lỗi: {e}")
+
 
 
 
