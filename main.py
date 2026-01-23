@@ -812,7 +812,7 @@ with tab3:
                 prompt_merge = f"Gộp các mục sau thành 1 nội dung duy nhất:\n{txt}"
                 
                 try:
-                    with st.spinner("AI đang gộp..."):
+                    
                         with st.spinner("AI đang gộp..."):
                             res = generate_content_with_fallback(prompt_merge, system_instruction="Merge Expert", stream=False)
         
@@ -879,6 +879,7 @@ with tab3:
                 time.sleep(1)
                 st.rerun()
             except Exception as e: st.error(f"Lỗi: {e}")
+
 
 
 
