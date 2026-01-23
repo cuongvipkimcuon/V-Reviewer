@@ -550,7 +550,7 @@ with tab2:
                 now_timestamp = datetime.utcnow().isoformat()
                 
                 # --- A. PREP & ROUTER ---
-                route = ai_router_pro(prompt)
+                route = ai_router_pro_v2(prompt)
                 target_chap = route.get('target_chapter')
                 
                 ctx = ""
@@ -764,6 +764,7 @@ with tab3:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Lỗi khi xóa: {e}")
+
 
 
 
