@@ -476,11 +476,11 @@ with tab1:
                         del st.session_state['extract_json']
                 except Exception as e: st.error(f"Lỗi Format: {e}")
 
-# === TAB 2: SMART CHAT (FIXED RAW OUTPUT) ===
+# === TAB 2: SMART CHAT (FINAL FIX RAW OUTPUT) ===
 with tab2:
     col_left, col_right = st.columns([3, 1])
     
-    # --- CỘT PHẢI (Giữ nguyên) ---
+    # --- CỘT PHẢI: QUẢN LÝ KÝ ỨC ---
     with col_right:
         st.write("### 🧠 Ký ức")
         use_bible = st.toggle("Dùng Bible Context", value=True)
@@ -575,15 +575,29 @@ with tab2:
 
                 final_prompt = f"CONTEXT:\n{ctx}\n\nUSER: {prompt}"
                 
-                # --- C. GENERATE (Đã thêm bộ lọc Stream Parser) ---
+                # --- C. GENERATE VỚI SAFE PARSER ---
                 
-                # Hàm lọc rác, chỉ lấy text
-                def stream_parser(stream_obj):
-                    for chunk in stream_obj:
+                # [FIX]: Hàm bóc tách nội dung thông minh
+                def safe_stream_parser(response):
+                    # Case 1: Nếu response là Object tĩnh (đã xong) -> Lấy .text luôn
+                    # (Tránh việc loop qua object sẽ ra candidate JSON rác)
+                    if hasattr(response, 'text'):
                         try:
-                            # Chỉ yield khi chunk có text
-                            if chunk.text: yield chunk.text
-                        except: pass
+                            if response.text: yield response.text
+                        except ValueError:
+                             yield "⚠️ *Nội dung bị chặn do vi phạm quy tắc an toàn của Google.*"
+                        except Exception:
+                             pass
+                        return
+
+                    # Case 2: Nếu là Stream thực sự -> Loop từng chunk
+                    try:
+                        for chunk in response:
+                            if hasattr(chunk, 'text'):
+                                yield chunk.text
+                    except Exception as e:
+                        # Fallback cuối cùng nếu mọi thứ vỡ nát
+                        yield ""
 
                 try:
                     res_stream = generate_content_with_fallback(final_prompt, system_instruction=persona['core_instruction'], stream=True)
@@ -591,17 +605,18 @@ with tab2:
                     with st.chat_message("assistant"):
                         if note: st.caption(f"📚 {', '.join(note)}")
                         
-                        # [QUAN TRỌNG] Bọc stream bằng hàm parser
-                        full_res = st.write_stream(stream_parser(res_stream))
+                        # Sử dụng safe_stream_parser
+                        full_res = st.write_stream(safe_stream_parser(res_stream))
                         
                         if not isinstance(full_res, str): full_res = str(full_res)
                     
-                    supabase.table("chat_history").insert([
-                        {"story_id": proj_id, "role": "user", "content": prompt, "created_at": now_timestamp},
-                        {"story_id": proj_id, "role": "model", "content": full_res, "created_at": now_timestamp}
-                    ]).execute()
+                    if full_res: # Chỉ lưu nếu có nội dung
+                        supabase.table("chat_history").insert([
+                            {"story_id": proj_id, "role": "user", "content": prompt, "created_at": now_timestamp},
+                            {"story_id": proj_id, "role": "model", "content": full_res, "created_at": now_timestamp}
+                        ]).execute()
 
-                except Exception as e: st.error(f"Lỗi: {e}")
+                except Exception as e: st.error(f"Lỗi generate: {e}")
 # === TAB 3: BIBLE (CẬP NHẬT: THÊM/SỬA/SEARCH/MERGE) ===
 with tab3:
     st.subheader("📚 Project Bible Manager")
@@ -749,6 +764,7 @@ with tab3:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Lỗi khi xóa: {e}")
+
 
 
 
