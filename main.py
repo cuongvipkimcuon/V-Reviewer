@@ -476,7 +476,7 @@ with tab1:
                         del st.session_state['extract_json']
                 except Exception as e: st.error(f"Lỗi Format: {e}")
 
-# === TAB 2: SMART CHAT (FIXED BUTTON LOGIC) ===
+# === TAB 2: SMART CHAT (FINAL PERFECT VERSION) ===
 with tab2:
     col_left, col_right = st.columns([3, 1])
     
@@ -493,29 +493,60 @@ with tab2:
              st.session_state['chat_cutoff'] = "1970-01-01"
              st.rerun()
         st.divider()
-        # ... (Đoạn Kết tinh giữ nguyên) ...
+
         with st.expander("💎 Kết tinh Chat"):
-            # ... (Code kết tinh cũ giữ nguyên) ...
-            pass # (Bạn giữ nguyên code cũ đoạn này nhé)
+            st.caption("Lưu ý chính vào Bible.")
+            crys_option = st.radio("Phạm vi:", ["20 tin gần nhất", "Toàn bộ phiên"])
+            memory_topic = st.text_input("Chủ đề:", placeholder="VD: Magic System")
+            if st.button("✨ Kết tinh"):
+                limit = 20 if crys_option == "20 tin gần nhất" else 100
+                chat_data = supabase.table("chat_history").select("*").eq("story_id", proj_id).order("created_at", desc=True).limit(limit).execute().data
+                chat_data.reverse()
+                if chat_data:
+                    with st.spinner("Đang tóm tắt..."):
+                        summary = crystallize_session(chat_data, persona['role'])
+                        if summary != "NO_INFO":
+                            st.session_state['crys_summary'] = summary
+                            st.session_state['crys_topic'] = memory_topic if memory_topic else f"Chat {datetime.now().strftime('%d/%m')}"
+                        else: st.warning("Không có thông tin giá trị.")
+
+    if 'crys_summary' in st.session_state:
+        with col_right:
+            final_sum = st.text_area("Hiệu chỉnh:", value=st.session_state['crys_summary'])
+            if st.button("💾 Lưu Ký ức"):
+                vec = get_embedding(final_sum)
+                if vec:
+                    supabase.table("story_bible").insert({
+                        "story_id": proj_id, "entity_name": f"[CHAT] {st.session_state['crys_topic']}",
+                        "description": final_sum, "embedding": vec, "source_chapter": 0
+                    }).execute()
+                    st.toast("Đã lưu!")
+                    del st.session_state['crys_summary']
+                    st.rerun()
 
     # --- CỘT TRÁI: CHAT UI (LOGIC MỚI) ---
     with col_left:
-        # 1. LOAD & HIỂN THỊ LỊCH SỬ (KÈM NÚT LIKE)
+        # 1. LOAD & HIỂN THỊ LỊCH SỬ
         try:
+            # Lấy data raw
             msgs = supabase.table("chat_history").select("*").eq("story_id", proj_id).order("created_at", desc=False).limit(50).execute().data
+            
+            # Lọc theo thời gian (Clear screen logic)
             visible_msgs = [m for m in msgs if m['created_at'] > st.session_state['chat_cutoff']]
             
-            # [FIX QUAN TRỌNG] Gắn nút Like vào từng tin nhắn Assistant
             for i, m in enumerate(visible_msgs):
                 with st.chat_message(m['role']):
                     st.markdown(m['content'])
                     
-                    # Chỉ hiện nút Like cho tin nhắn của AI (model)
-                    if m['role'] == 'model':
-                        # Key phải unique (dùng index i)
+                    # [FIX LỖI RÂU ÔNG NỌ]: Chỉ hiện nút Like nếu là Model VÀ không phải tin đầu tiên (i > 0)
+                    if m['role'] == 'model' and i > 0:
+                        # Kiểm tra chắc chắn tin trước đó là của User
+                        prev_msg = visible_msgs[i-1]
+                        
                         if st.button("❤️ Dạy V học", key=f"like_btn_{i}_{m['id']}", help="AI sẽ học style này"):
-                            # Logic xử lý Like nằm ở đây -> Luôn chạy được
-                            raw = extract_rule_raw(visible_msgs[i-1]['content'], m['content']) # Lấy prompt của user câu trước đó
+                            # Logic xử lý Like
+                            # Bây giờ visible_msgs[i-1] chắc chắn là tin liền trước
+                            raw = extract_rule_raw(prev_msg['content'], m['content'])
                             if raw:
                                 ana = analyze_rule_conflict(raw, proj_id)
                                 st.session_state['pending_rule'] = {"raw": raw, "analysis": ana}
@@ -532,12 +563,12 @@ with tab2:
                 current_system_instruction = persona['core_instruction']
                 if not use_bible: current_system_instruction += "\n\n[BRAINSTORM MODE] Ignore constraints."
 
-                # [FIX 1: LỌC TIN NHẮN THEO CUTOFF TRƯỚC KHI GỬI CHO ROUTER]
-                valid_history = [m for m in msgs if m['created_at'] > st.session_state['chat_cutoff']]
-                recent_pairs = valid_history[-6:] # Chỉ lấy 6 tin GẦN NHẤT trong phiên chat hiện tại
+                # [FIX LỖI ĐỌC TRỘM]: Lọc tin nhắn SAU cutoff rồi mới cắt lấy 6 tin cuối
+                valid_history_for_context = [m for m in msgs if m['created_at'] > st.session_state['chat_cutoff']]
+                recent_pairs = valid_history_for_context[-6:] 
                 chat_ctx_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent_pairs])
                 
-                # Gọi Router V2 (Đã fix lỗi json)
+                # Gọi Router V2
                 route = ai_router_pro_v2(prompt, chat_ctx_text)
                 intent = route.get('intent')
                 target_files = route.get('target_files', [])
@@ -558,14 +589,15 @@ with tab2:
                     if mandatory: ctx += mandatory
                     
                     if intent == "search_bible" or (not target_files):
+                        # Nâng ngưỡng search lên 0.5 để tránh rác như đã bàn
+                        # (Giả sử bạn đã update hàm smart_search_hybrid_raw lên 0.5)
                         bible_res = smart_search_hybrid(better_query, proj_id)
                         if bible_res: 
                             ctx += f"\n--- VECTOR MEMORY ---\n{bible_res}\n"
                             note.append("Vector")
 
-                # Recent Chat Context (Lấy 10 tin để AI nhớ)
-                # [FIX 2: Lại dùng valid_history đã lọc ở trên cho nhất quán]
-                recent = "\n".join([f"{m['role']}: {m['content']}" for m in valid_history[-10:]])
+                # Recent Chat Context (Lấy 10 tin từ lịch sử ĐÃ LỌC)
+                recent = "\n".join([f"{m['role']}: {m['content']}" for m in valid_history_for_context[-10:]])
                 ctx += f"\n--- RECENT ---\n{recent}"
                 
                 final_prompt = f"CONTEXT:\n{ctx}\n\nUSER QUERY: {prompt}\n(Intent: {better_query})"
@@ -585,10 +617,11 @@ with tab2:
                         {"story_id": proj_id, "role": "user", "content": str(prompt)},
                         {"story_id": proj_id, "role": "model", "content": str(full_res)}
                     ]).execute()
-                    st.rerun() # Rerun để nút Like hiện ra ở vòng lặp trên
+                    st.rerun() 
 
                 except Exception as e: st.error(f"Lỗi: {e}")
-    # --- E. UI QUYẾT ĐỊNH LUẬT (Nằm ngoài cùng để luôn hiện) ---
+
+    # --- E. UI QUYẾT ĐỊNH LUẬT (Nằm ngoài cùng) ---
     if 'pending_rule' in st.session_state:
         pending = st.session_state['pending_rule']
         ana = pending['analysis']
@@ -769,6 +802,7 @@ with tab3:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Lỗi khi xóa: {e}")
+
 
 
 
