@@ -487,7 +487,7 @@ with tab2:
         
         if 'chat_cutoff' not in st.session_state: st.session_state['chat_cutoff'] = "1970-01-01" 
         if st.button("🧹 Clear Screen"):
-            st.session_state['chat_cutoff'] = datetime.now().isoformat()
+            st.session_state['chat_cutoff'] = datetime.utcnow().isoformat()
             st.rerun()
         if st.button("🔄 Hiện lại toàn bộ"):
              st.session_state['chat_cutoff'] = "1970-01-01"
@@ -802,6 +802,7 @@ with tab3:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Lỗi khi xóa: {e}")
+
 
 
 
