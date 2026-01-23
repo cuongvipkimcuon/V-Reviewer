@@ -312,10 +312,16 @@ def analyze_rule_conflict(new_rule_content, project_id):
         "merged_content": "Nội dung gộp (nếu MERGE). Nếu CONFLICT để null."
     }}
     """
+    # --- TRONG HÀM analyze_rule_conflict ---
     try:
         model = genai.GenerativeModel("gemini-2.5-flash")
         res = model.generate_content(judge_prompt, generation_config={"response_mime_type": "application/json"})
-        return json.loads(res.text)
+        
+        # === FIX: GỌI HÀM CLEAN TRƯỚC KHI LOADS ===
+        cleaned = clean_json_text(res.text) 
+        return json.loads(cleaned)
+        # ==========================================
+        
     except:
         return {"status": "NEW", "reason": "AI Judge Error", "suggested_content": new_rule_content}
 
@@ -822,4 +828,5 @@ with tab3:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Lỗi khi xóa: {e}")
+
 
