@@ -366,7 +366,7 @@ with st.sidebar:
 
 st.title(f"{persona['icon']} {selected_proj_name}")
 
-tab1, tab2, tab3 = st.tabs(["✍️ Workstation", "💬 V Chat", "📚 Project Bible"])
+tab1, tab2, tab3 = st.tabs(["✍️ Workstation  ", "💬 V Chat  ", "📚 Project Bible  "])
 
 # === TAB 1: WORKSTATION (GIỮ NGUYÊN) ===
 with tab1:
@@ -824,6 +824,7 @@ with tab3:
                 time.sleep(1)
                 st.rerun()
             except Exception as e: st.error(f"Lỗi: {e}")
+
 
 
 
