@@ -1945,7 +1945,7 @@ def render_workstation_tab(project_id, persona):
     supabase = services['supabase']
 
     # --- 1. TOOLBAR ---
-    c1, c2, c3, c4 = st.columns() 
+    c1, c2, c3, c4 = st.columns(3,1,1,1) 
     
     with c1:
         files = supabase.table("chapters") \
@@ -2860,6 +2860,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
