@@ -1929,11 +1929,12 @@ INSTRUCTIONS:
 import streamlit as st
 import time
 import json
+import re
 import pandas as pd
 
 def render_workstation_tab(project_id, persona):
     """
-    Tab Workstation - Phiên bản 'Bulletproof': Tự động sửa lỗi JSON hỏng
+    Tab Workstation - Phiên bản 'Bulletproof': Đã fix lỗi Columns & Logic Regex
     """
     st.subheader("✍️ Writing Workstation")
     
@@ -1941,11 +1942,13 @@ def render_workstation_tab(project_id, persona):
         st.info("📁 Vui lòng chọn Project ở thanh bên trái.")
         return
 
+    # Giả định init_services() đã có ở context ngoài
     services = init_services()
     supabase = services['supabase']
 
     # --- 1. TOOLBAR ---
-    c1, c2, c3, c4 = st.columns(3,1,1,1) 
+    # FIX: Phải truyền tỷ lệ hoặc số lượng cột vào st.columns
+    c1, c2, c3, c4 = st.columns([3, 1, 1, 1]) 
     
     with c1:
         files = supabase.table("chapters") \
@@ -1955,7 +1958,10 @@ def render_workstation_tab(project_id, persona):
             .execute()
 
         file_options = {}
-        for f in files.data:
+        # Xử lý an toàn nếu không có file nào
+        file_list = files.data if files.data else []
+        
+        for f in file_list:
             display_name = f"📄 #{f['chapter_number']}: {f['title']}" if f['title'] else f"📄 #{f['chapter_number']}"
             file_options[display_name] = f['chapter_number']
 
@@ -1966,8 +1972,9 @@ def render_workstation_tab(project_id, persona):
         )
 
     # Logic Load Data
+    chap_num = 0 # Init biến để tránh lỗi UnboundLocalError
     if selected_file == "+ New File":
-        chap_num = len(files.data) + 1
+        chap_num = len(file_list) + 1
         db_content = ""
         db_review = ""
         db_title = f"Chapter {chap_num}"
@@ -1980,8 +1987,9 @@ def render_workstation_tab(project_id, persona):
                 .eq("chapter_number", chap_num) \
                 .execute()
             
-            if res.data:
-                row = res.data if isinstance(res.data, list) else res.data
+            # FIX: Kiểm tra list rỗng và lấy phần tử đầu tiên
+            if res.data and len(res.data) > 0:
+                row = res.data[0]
                 db_content = row.get('content') or ""
                 db_title = row.get('title') or f"Chapter {chap_num}"
                 db_review = row.get('review_content') or ""
@@ -2041,8 +2049,9 @@ def render_workstation_tab(project_id, persona):
 
     has_review = bool(db_review) or st.session_state.get('trigger_ai_review')
     
+    # FIX: Cung cấp tỷ lệ cột cho Editor/Review
     if has_review:
-        col_editor, col_review = st.columns()
+        col_editor, col_review = st.columns([3, 2])
     else:
         col_editor = st.container()
     
@@ -2081,17 +2090,20 @@ def render_workstation_tab(project_id, persona):
                             temperature=0.5
                         )
                         
-                        new_review = response.choices.message.content
-                        supabase.table("chapters").update({
-                            "review_content": new_review
-                        }).eq("story_id", project_id).eq("chapter_number", chap_num).execute()
-                        
-                        db_review = new_review
-                        st.session_state['trigger_ai_review'] = False
-                        st.toast("Review hoàn tất!", icon="🤖")
-                        st.rerun() 
+                        # FIX: Truy cập đúng cấu trúc response object
+                        if response and response.choices:
+                            new_review = response.choices[0].message.content
+                            supabase.table("chapters").update({
+                                "review_content": new_review
+                            }).eq("story_id", project_id).eq("chapter_number", chap_num).execute()
+                            
+                            db_review = new_review
+                            st.session_state['trigger_ai_review'] = False
+                            st.toast("Review hoàn tất!", icon="🤖")
+                            st.rerun() 
                     except Exception as e:
                         st.error(f"Lỗi Review: {e}")
+                        st.session_state['trigger_ai_review'] = False
 
             with st.expander("🤖 AI Editor Notes", expanded=True):
                 if db_review:
@@ -2108,7 +2120,6 @@ def render_workstation_tab(project_id, persona):
         with st.container():
             st.subheader("📚 Extract to Bible")
             with st.spinner("Đang trích xuất dữ liệu..."):
-                # PROMPT ĐƯỢC CẢI TIẾN ĐỂ TRÁNH LỖI QUOTES
                 ext_prompt = f"""
                 TITLE: {file_title}
                 CONTENT: {content}
@@ -2125,71 +2136,75 @@ def render_workstation_tab(project_id, persona):
                         messages=[{"role": "user", "content": ext_prompt}],
                         model=st.session_state.get('selected_model', Config.DEFAULT_MODEL),
                         temperature=0.3,
-                        max_tokens=2000, # Tăng token để tránh bị cắt giữa chừng
+                        max_tokens=2000,
                         response_format={"type": "json_object"}
                     )
-                    raw_text = response.choices.message.content
-                    clean_json = AIService.clean_json_text(raw_text)
                     
-                    data = []
-                    try:
-                        # Cách 1: Thử parse JSON chuẩn
-                        parsed = json.loads(clean_json)
-                        if isinstance(parsed, dict):
-                            data = parsed.get("items", [])
-                        elif isinstance(parsed, list):
-                            data = parsed
-                            
-                    except json.JSONDecodeError:
-                        # Cách 2: Data Rescue (Cứu hộ dữ liệu) bằng Regex nếu JSON lỗi
-                        st.warning("⚠️ AI trả về JSON lỗi, đang cố gắng khôi phục dữ liệu...")
+                    if response and response.choices:
+                        raw_text = response.choices[0].message.content # FIX: Truy cập đúng index [0]
+                        clean_json = AIService.clean_json_text(raw_text)
                         
-                        # Regex tìm các pattern giống: "entity_name": "...", "type": "...", "description": "..."
-                        # Pattern này chấp nhận lỗi cú pháp nhỏ xung quanh
-                        pattern = r'"entity_name"\s*:\s*"(.*?)"\s*,\s*"type"\s*:\s*"(.*?)"\s*,\s*"description"\s*:\s*"(.*?)"'
-                        matches = re.findall(pattern, clean_json, re.DOTALL)
-                        
-                        for m in matches:
-                            data.append({
-                                "entity_name": m,
-                                "type": m[1],
-                                "description": m[2].replace('\n', ' ').strip()
-                            })
+                        data = []
+                        try:
+                            # Cách 1: Thử parse JSON chuẩn
+                            parsed = json.loads(clean_json)
+                            if isinstance(parsed, dict):
+                                data = parsed.get("items", [])
+                            elif isinstance(parsed, list):
+                                data = parsed
+                                
+                        except json.JSONDecodeError:
+                            # Cách 2: Data Rescue (Cứu hộ dữ liệu) bằng Regex
+                            st.warning("⚠️ AI trả về JSON lỗi, đang cố gắng khôi phục dữ liệu...")
                             
-                    if not data:
-                        st.error("❌ Không thể đọc được dữ liệu từ AI. Hãy thử lại.")
-                        with st.expander("Raw Output (Debug)"):
-                            st.text(raw_text)
-                    
+                            # Regex tìm pattern. Lưu ý: pattern này tìm 3 group ()
+                            pattern = r'"entity_name"\s*:\s*"(.*?)"\s*,\s*"type"\s*:\s*"(.*?)"\s*,\s*"description"\s*:\s*"(.*?)"'
+                            matches = re.findall(pattern, clean_json, re.DOTALL)
+                            
+                            for m in matches:
+                                # FIX: m là tuple (group1, group2, group3)
+                                data.append({
+                                    "entity_name": m[0], # group 1
+                                    "type": m[1],        # group 2
+                                    "description": m[2].replace('\n', ' ').strip() # group 3
+                                })
+                                
+                        if not data:
+                            st.error("❌ Không thể đọc được dữ liệu từ AI. Hãy thử lại.")
+                            with st.expander("Raw Output (Debug)"):
+                                st.text(raw_text)
+                        
+                        else:
+                            with st.expander("Xem trước (Preview)", expanded=True):
+                                st.dataframe(pd.DataFrame(data)[['entity_name', 'type', 'description']], use_container_width=True)
+                                c_save, c_cancel = st.columns(2)
+                                
+                                if c_save.button("💾 Lưu vào Bible", type="primary"):
+                                    count = 0
+                                    for item in data:
+                                        desc = item.get('description', '')
+                                        if desc:
+                                            vec = AIService.get_embedding(desc)
+                                            if vec:
+                                                supabase.table("story_bible").insert({
+                                                    "story_id": project_id,
+                                                    "entity_name": item.get('entity_name', 'Unknown'),
+                                                    "description": desc,
+                                                    "embedding": vec,
+                                                    "source_chapter": chap_num
+                                                }).execute()
+                                                count += 1
+                                    
+                                    st.success(f"Đã lưu {count} mục!")
+                                    st.session_state['extract_bible_mode'] = False
+                                    time.sleep(1)
+                                    st.rerun()
+                                    
+                                if c_cancel.button("Hủy bỏ"):
+                                    st.session_state['extract_bible_mode'] = False
+                                    st.rerun()
                     else:
-                        with st.expander("Xem trước (Preview)", expanded=True):
-                            st.dataframe(pd.DataFrame(data)[['entity_name', 'type', 'description']], use_container_width=True)
-                            c_save, c_cancel = st.columns(2)
-                            
-                            if c_save.button("💾 Lưu vào Bible", type="primary"):
-                                count = 0
-                                for item in data:
-                                    desc = item.get('description', '')
-                                    if desc:
-                                        vec = AIService.get_embedding(desc)
-                                        if vec:
-                                            supabase.table("story_bible").insert({
-                                                "story_id": project_id,
-                                                "entity_name": item.get('entity_name', 'Unknown'),
-                                                "description": desc,
-                                                "embedding": vec,
-                                                "source_chapter": chap_num
-                                            }).execute()
-                                            count += 1
-                                
-                                st.success(f"Đã lưu {count} mục!")
-                                st.session_state['extract_bible_mode'] = False
-                                time.sleep(1)
-                                st.rerun()
-                                
-                            if c_cancel.button("Hủy bỏ"):
-                                st.session_state['extract_bible_mode'] = False
-                                st.rerun()
+                        st.error("Không nhận được phản hồi từ AI.")
 
                 except Exception as e:
                     st.error(f"Lỗi hệ thống: {e}")
@@ -2860,6 +2875,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
