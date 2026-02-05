@@ -1425,7 +1425,7 @@ def render_sidebar(session_manager):
                     session_manager.cookie_manager.delete("supabase_access_token")
                     session_manager.cookie_manager.delete("supabase_refresh_token")
                 except:
-                pass
+                    pass
 
                 # 3. SỬA ĐOẠN NÀY: Thay vì st.session_state.clear(), hãy dùng vòng lặp
                 # Xóa tất cả session state TRỪ biến 'logging_out'
@@ -2846,6 +2846,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
