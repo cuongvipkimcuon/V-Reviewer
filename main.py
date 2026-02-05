@@ -1417,15 +1417,22 @@ def render_sidebar(session_manager):
             # Logout button
             st.markdown("---")
             if st.button("🚪 Logout", use_container_width=True, type="secondary"):
-                # 1. BẬT CỜ LOGOUT: Báo hiệu cho check_login biết đừng auto-login lại
+                # 1. Bật cờ logout
                 st.session_state['logging_out'] = True
+        
+                # 2. Xóa Cookie (Giữ nguyên)
                 try:
                     session_manager.cookie_manager.delete("supabase_access_token")
                     session_manager.cookie_manager.delete("supabase_refresh_token")
                 except:
-                    pass
-                st.session_state.clear()
-                
+                pass
+
+                # 3. SỬA ĐOẠN NÀY: Thay vì st.session_state.clear(), hãy dùng vòng lặp
+                # Xóa tất cả session state TRỪ biến 'logging_out'
+                for key in list(st.session_state.keys()):
+                    if key != 'logging_out':  # <--- GIỮ LẠI CÁI NÀY
+                        del st.session_state[key]
+        
                 st.success("Logged out successfully!")
                 time.sleep(1)
                 st.rerun()
@@ -2839,6 +2846,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
