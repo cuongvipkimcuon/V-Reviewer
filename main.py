@@ -1927,46 +1927,44 @@ INSTRUCTIONS:
                 st.rerun()
 
 def render_workstation_tab(project_id, persona):
-    """Tab Workstation - Quản lý files với tính năng extract Bible"""
+    """Tab Workstation - Quản lý files với tính năng extract Bible (ĐÃ SỬA LỖI LOGIC NÚT BẤM)"""
     st.header("✍️ Writing Workstation")
-    
+
     if not project_id:
         st.info("📁 Please select or create a project first")
         return
-    
+
     services = init_services()
     supabase = services['supabase']
-    
-    # File management
-    col1, col2 = st.columns([3, 1])
-    
+
+    # --- 1. LOAD DANH SÁCH FILE ---
+    col1, col2 = st.columns([1, 2])
+
     with col1:
-        # Load files
         files = supabase.table("chapters") \
             .select("chapter_number, title") \
             .eq("story_id", project_id) \
             .order("chapter_number") \
             .execute()
-        
+
         file_options = {}
         for f in files.data:
             display_name = f"📄 #{f['chapter_number']}"
             if f['title']:
                 display_name += f": {f['title']}"
             file_options[display_name] = f['chapter_number']
-        
+
         selected_file = st.selectbox(
             "Select File",
             ["+ New File"] + list(file_options.keys())
         )
-        
+
         if selected_file == "+ New File":
             chap_num = len(files.data) + 1
             db_content = ""
             db_title = f"Chapter {chap_num}"
         else:
             chap_num = file_options[selected_file]
-            
             # Load file content
             try:
                 res = supabase.table("chapters") \
@@ -1976,9 +1974,9 @@ def render_workstation_tab(project_id, persona):
                     .execute()
                 
                 if res.data:
-                    db_content = res.data[0].get('content', '')
-                    db_title = res.data[0].get('title', f'Chapter {chap_num}')
-                    db_review = res.data[0].get('review_content', '')
+                    db_content = res.data.get('content', '')
+                    db_title = res.data.get('title', f'Chapter {chap_num}')
+                    db_review = res.data.get('review_content', '')
                 else:
                     db_content = ""
                     db_title = f"Chapter {chap_num}"
@@ -1987,62 +1985,77 @@ def render_workstation_tab(project_id, persona):
                 db_content = ""
                 db_title = f"Chapter {chap_num}"
                 db_review = ""
-    
+
+    # --- 2. CỘT CÔNG CỤ (NÚT BẤM) ---
     with col2:
         st.markdown("### 🔧 Tools")
-        
-        # Quick actions
+
+        # Nút AI Review
         if st.button("🚀 AI Review", use_container_width=True, type="primary"):
-            if st.session_state.get('current_file_content'):
-                st.session_state['ai_review_mode'] = True
-        
+            st.session_state['ai_review_mode'] = True
+            st.rerun()
+
+        # Nút SAVE (ĐÃ FIX: Lấy dữ liệu trực tiếp từ widget key)
         if st.button("💾 Save", use_container_width=True):
-            if st.session_state.get('current_file_content') is not None:
-                supabase.table("chapters").upsert({
-                    "story_id": project_id,
-                    "chapter_number": chap_num,
-                    "title": st.session_state.get('current_file_title', db_title),
-                    "content": st.session_state.current_file_content
-                }).execute()
-                st.success("✅ Saved successfully!")
-        
+            # Lấy nội dung mới nhất người dùng vừa gõ
+            current_content = st.session_state.get(f"file_content_{chap_num}", "")
+            current_title = st.session_state.get(f"file_title_{chap_num}", db_title)
+
+            if current_content:
+                try:
+                    # Thêm on_conflict để tránh lỗi trùng lặp
+                    supabase.table("chapters").upsert({
+                        "story_id": project_id,
+                        "chapter_number": chap_num,
+                        "title": current_title,
+                        "content": current_content
+                    }, on_conflict="story_id, chapter_number").execute()
+                    
+                    st.success("✅ Saved successfully!")
+                    # Cập nhật lại session để đồng bộ
+                    st.session_state.current_file_content = current_content
+                    time.sleep(0.5) 
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Lỗi khi lưu: {e}")
+            else:
+                st.warning("⚠️ Nội dung trống, chưa lưu được!")
+
+        # Nút EXTRACT BIBLE (ĐÃ FIX: Xóa điều kiện if chặn dòng, thêm rerun)
         if st.button("📥 Extract to Bible", use_container_width=True):
-            if st.session_state.get('current_file_content'):
-                st.session_state['extract_bible_mode'] = True
-    
-    # Main editor
+            st.session_state['extract_bible_mode'] = True
+            st.rerun() # Quan trọng: Load lại trang để chạy đoạn code extract bên dưới
+
+    # --- 3. EDITOR CHÍNH ---
     st.markdown("---")
-    
-    col_editor, col_stats = st.columns([3, 1])
-    
+    col_editor, col_stats = st.columns([1, 2])
+
     with col_editor:
         st.subheader("📝 Editor")
         
-        # File title
+        # File title input
         file_title = st.text_input(
             "File Title",
             value=db_title,
             key=f"file_title_{chap_num}",
             placeholder="Enter file title..."
         )
-        
         st.session_state['current_file_title'] = file_title
-        
-        # Content editor
+
+        # Content Input (Key quan trọng để nút Save hoạt động)
         content = st.text_area(
             "Content",
             value=db_content,
             height=400,
-            key=f"file_content_{chap_num}",
+            key=f"file_content_{chap_num}", 
             placeholder="Start writing here..."
         )
-        
+        # Lưu vào session thường (fallback)
         st.session_state['current_file_content'] = content
         st.session_state['current_file_num'] = chap_num
-    
+
     with col_stats:
         st.subheader("📊 Statistics")
-        
         if content:
             words = len(content.split())
             chars = len(content)
@@ -2051,16 +2064,13 @@ def render_workstation_tab(project_id, persona):
             st.metric("Words", words)
             st.metric("Characters", chars)
             st.metric("Paragraphs", paragraphs)
-            
-            # Read time estimation
-            read_time = words / 200  # Average reading speed
+            read_time = words / 200
             st.metric("Read Time", f"{read_time:.1f} min")
-    
-    # AI Review Section
+
+    # --- 4. TÍNH NĂNG AI REVIEW ---
     if st.session_state.get('ai_review_mode') and content:
         st.markdown("---")
         st.subheader("🤖 AI Review")
-        
         with st.spinner("Analyzing..."):
             context = HybridSearch.smart_search_hybrid(content[:500], project_id)
             rules = ContextManager.get_mandatory_rules(project_id)
@@ -2080,12 +2090,10 @@ def render_workstation_tab(project_id, persona):
                     temperature=0.5,
                     max_tokens=1000
                 )
-                
-                review_text = response.choices[0].message.content
+                review_text = response.choices.message.content
                 
                 with st.expander("📝 Review Results", expanded=True):
                     st.markdown(review_text)
-                    
                     if st.button("💾 Save Review to DB"):
                         supabase.table("chapters") \
                             .update({"review_content": review_text}) \
@@ -2095,11 +2103,10 @@ def render_workstation_tab(project_id, persona):
                         st.success("Review saved!")
                         st.session_state['ai_review_mode'] = False
                         st.rerun()
-                
             except Exception as e:
                 st.error(f"Review failed: {e}")
-    
-    # Bible Extraction Section
+
+    # --- 5. TÍNH NĂNG EXTRACT BIBLE (ĐÃ FIX: Dùng biến content trực tiếp) ---
     if st.session_state.get('extract_bible_mode') and content:
         st.markdown("---")
         st.subheader("📚 Extract to Bible")
@@ -2108,23 +2115,22 @@ def render_workstation_tab(project_id, persona):
             meta_desc = "Brief description of PURPOSE, MAIN EVENTS and OUTCOME of this File."
             if st.session_state.get('persona') == "Coder":
                 meta_desc = "Describe PURPOSE, MAIN COMPONENTS (Functions/Classes) and INPUT/OUTPUT."
-            
+
             extra_req = f"""
             MANDATORY REQUIREMENT: Add to beginning of JSON a summary item:
             - entity_name: "[META] {file_title if file_title else f'File {chap_num}'}"
             - type: "Overview"
             - description: "{meta_desc}"
             """
-            
+
             ext_prompt = f"""
             TITLE: {file_title}
             CONTENT: {content}
             TASK: {persona.get('extractor_prompt', 'Extract key entities as JSON')}
             {extra_req}
-            
             Return JSON array of objects with fields: entity_name, type, description
             """
-            
+
             try:
                 response = AIService.call_openrouter(
                     messages=[{"role": "user", "content": ext_prompt}],
@@ -2133,12 +2139,11 @@ def render_workstation_tab(project_id, persona):
                     max_tokens=1500
                 )
                 
-                extract_text = response.choices[0].message.content
+                extract_text = response.choices.message.content
                 clean_json = AIService.clean_json_text(extract_text)
                 
                 try:
                     data = json.loads(clean_json)
-                    
                     with st.expander("Preview Extraction", expanded=True):
                         st.dataframe(
                             pd.DataFrame(data)[['entity_name', 'type', 'description']],
@@ -2146,26 +2151,34 @@ def render_workstation_tab(project_id, persona):
                             hide_index=True
                         )
                         
-                        if st.button("💾 Save to Bible"):
-                            for item in data:
-                                vec = AIService.get_embedding(f"{item.get('description')}")
-                                if vec:
-                                    supabase.table("story_bible").insert({
-                                        "story_id": project_id,
-                                        "entity_name": item['entity_name'],
-                                        "description": item['description'],
-                                        "embedding": vec,
-                                        "source_chapter": chap_num
-                                    }).execute()
-                            
-                            st.success("Saved to Bible!")
-                            st.session_state['extract_bible_mode'] = False
-                            st.rerun()
-                
+                        col_ex_1, col_ex_2 = st.columns(2)
+                        with col_ex_1:
+                            if st.button("💾 Save to Bible", type="primary"):
+                                for item in data:
+                                    vec = AIService.get_embedding(f"{item.get('description')}")
+                                    if vec:
+                                        supabase.table("story_bible").insert({
+                                            "story_id": project_id,
+                                            "entity_name": item['entity_name'],
+                                            "description": item['description'],
+                                            "embedding": vec,
+                                            "source_chapter": chap_num
+                                        }).execute()
+                                
+                                st.success("Saved to Bible!")
+                                st.session_state['extract_bible_mode'] = False
+                                time.sleep(1)
+                                st.rerun()
+                                
+                        with col_ex_2:
+                             if st.button("❌ Cancel"):
+                                st.session_state['extract_bible_mode'] = False
+                                st.rerun()
+
                 except Exception as e:
                     st.error(f"JSON parse error: {e}")
                     st.code(extract_text, language="json")
-            
+
             except Exception as e:
                 st.error(f"Extraction failed: {e}")
 
@@ -2833,6 +2846,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
