@@ -5,3 +5,6 @@ pandas
 numpy
 extra-streamlit-components
 pyarrow
+openai
+requests
+python-dotenv
