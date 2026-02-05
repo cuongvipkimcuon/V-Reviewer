@@ -1928,7 +1928,7 @@ INSTRUCTIONS:
 
 def render_workstation_tab(project_id, persona):
     """
-    Tab Workstation - Phiên bản 'Clean UI' (Đã sửa lỗi ValueError columns)
+    Tab Workstation - Phiên bản 'Clean UI' (ĐÃ FIX LỖI COLUMN VALUE ERROR)
     """
     # Header nhỏ gọn
     st.subheader("✍️ Writing Workstation")
@@ -1941,8 +1941,8 @@ def render_workstation_tab(project_id, persona):
     supabase = services['supabase']
 
     # --- 1. THANH CÔNG CỤ (Toolbar) ---
-    # SỬA LỖI TẠI ĐÂY: Khai báo đúng 4 cột với tỷ lệ [3, 4]
-    c1, c2, c3, c4 = st.columns([3, 4])
+    # SỬA LỖI TẠI ĐÂY: Tạo 4 cột. Cột 1 (File) rộng gấp 3 lần các nút bấm.
+    c1, c2, c3, c4 = st.columns([1, 3]) 
     
     with c1:
         # Load danh sách file
@@ -1979,7 +1979,7 @@ def render_workstation_tab(project_id, persona):
                 .execute()
             
             if res.data:
-                row = res.data # Lấy dòng đầu tiên
+                row = res.data if isinstance(res.data, list) else res.data
                 db_content = row.get('content') or ""
                 db_title = row.get('title') or f"Chapter {chap_num}"
                 db_review = row.get('review_content') or ""
@@ -2042,7 +2042,7 @@ def render_workstation_tab(project_id, persona):
     has_review = bool(db_review) or st.session_state.get('trigger_ai_review')
     
     if has_review:
-        col_editor, col_review = st.columns([4, 5]) # Tỷ lệ 2:1 nếu có review
+        col_editor, col_review = st.columns([3, 4]) # Tỷ lệ 2:1 nếu có review
     else:
         col_editor = st.container() # Chiếm full nếu không có review
     
@@ -2094,7 +2094,7 @@ def render_workstation_tab(project_id, persona):
                         db_review = new_review
                         st.session_state['trigger_ai_review'] = False
                         st.toast("Review hoàn tất!", icon="🤖")
-                        st.rerun() # Rerun để hiển thị kết quả ngay
+                        st.rerun() 
                         
                     except Exception as e:
                         st.error(f"Lỗi Review: {e}")
@@ -2822,6 +2822,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
