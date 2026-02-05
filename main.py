@@ -2136,6 +2136,14 @@ def render_workstation_tab(project_id, persona):
                 CONTENT: {content}
                 TASK: {persona.get('extractor_prompt', 'Extract entities')}
                 Return JSON array only.
+                IMPORTANT FORMAT:
+                Return a valid JSON OBJECT with a single key "items" containing the array of entities.
+                Example:
+                {{
+                    "items": [
+                        {{ "entity_name": "...", "type": "...", "description": "..." }}
+                    ]
+                }}
                 """
                 try:
                     response = AIService.call_openrouter(
@@ -2840,6 +2848,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
