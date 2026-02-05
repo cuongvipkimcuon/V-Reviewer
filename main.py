@@ -335,7 +335,7 @@ class Config:
     # Default settings
     DEFAULT_MODEL = "anthropic/claude-3.5-haiku"
     EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
-    ROUTER_MODEL = "deepseek/deepseek-chat"
+    ROUTER_MODEL = "deepseek/deepseek-v3.2"
     
     # Bible prefixes (người dùng có thể tạo thêm)
     BIBLE_PREFIXES = [
@@ -691,7 +691,8 @@ class AIService:
         model: str,
         temperature: float = 0.7,
         max_tokens: int = 1000,
-        stream: bool = False
+        stream: bool = False,
+        response_format: Optional[Dict] = None # <--- THÊM THAM SỐ NÀY
     ) -> Any:
         """Gọi OpenRouter API sử dụng OpenAI client"""
         try:
@@ -709,7 +710,8 @@ class AIService:
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                stream=stream
+                stream=stream,
+                response_format=response_format # <--- TRUYỀN VÀO ĐÂY
             )
             
             return response
@@ -876,7 +878,8 @@ class SmartAIRouter:
                 messages=messages,
                 model=Config.ROUTER_MODEL,
                 temperature=0.1,
-                max_tokens=500
+                max_tokens=500,
+                response_format={"type": "json_object"} # <--- THÊM DÒNG NÀY
             )
             
             content = response.choices[0].message.content
@@ -1144,7 +1147,8 @@ class RuleMiningSystem:
                 messages=messages,
                 model=Config.ROUTER_MODEL,
                 temperature=0.2,
-                max_tokens=500
+                max_tokens=500,
+                response_format={"type": "json_object"} # <--- THÊM DÒNG NÀY
             )
             
             content = response.choices[0].message.content
@@ -2846,6 +2850,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
