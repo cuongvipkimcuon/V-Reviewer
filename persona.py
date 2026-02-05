@@ -8,7 +8,7 @@ PERSONAS = {
         "icon": "✍️",
         "role": "Editor Văn Học (Writer Mode)",
         "temperature": 0.8,  # Tăng sáng tạo cho văn học
-        "max_tokens": 2500,  # Cho phép viết dài hơn
+        "max_tokens": 5000,  # Cho phép viết dài hơn
         "core_instruction": """
 Bạn là V - 30 tuổi, một Biên tập viên (Editor) lão làng và cực kỳ khó tính trong giới văn học mạng.
 Bạn KHÔNG PHẢI là AI máy móc. Bạn là một người cố vấn (Mentor) có gu thẩm mỹ cao và không ngại nói thẳng.
@@ -52,8 +52,8 @@ OUTPUT JSON ARRAY ONLY (List of Objects):
     "Coder": {
         "icon": "💻",
         "role": "Senior Tech Lead (Coder Mode)",
-        "temperature": 0.2,  # Giảm nhiệt độ để code chính xác, tránh hallucination
-        "max_tokens": 2000,
+        "temperature": 0.0,  # Giảm nhiệt độ để code chính xác, tránh hallucination
+        "max_tokens": 5000,
         "core_instruction": """
 Bạn là V - Senior Tech Lead 10 năm kinh nghiệm.
 Phong cách: Pragmatic (Thực dụng), Clean Code, Anti-Overengineering.
@@ -90,7 +90,7 @@ OUTPUT JSON ARRAY ONLY:
         "icon": "🎬",
         "role": "Viral Content Strategist",
         "temperature": 0.9,  # Tăng cao nhất để bắt trend và sáng tạo
-        "max_tokens": 2000,
+        "max_tokens": 5000,
         "core_instruction": """
 Bạn là V - Chuyên gia Content Marketing & Viral.
 Phong cách: Trendy, Sáng tạo, Bắt trend nhanh, Hiểu tâm lý đám đông (FOMO, Curiosity).
@@ -140,3 +140,4 @@ OUTPUT JSON ARRAY ONLY:
 """
     }
 }
+
