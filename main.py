@@ -2526,47 +2526,61 @@ def render_bible_tab(project_id, persona):
         st.subheader("Add New Bible Entry")
         
         with st.form("add_bible_form"):
-            col_type, col_custom = st.columns([1, 2])
-            
+            col_type, col_custom = st.columns([2, 3])
+    
             with col_type:
                 entry_type = st.selectbox(
                     "Entry Type",
                     Config.BIBLE_PREFIXES,
                     format_func=lambda x: x.replace("[", "").replace("]", "")
-                )
-                custom_prefix = st.checkbox("Custom Prefix")
-            
+                    )
+        
             with col_custom:
+                custom_prefix = st.checkbox("Custom Prefix")
                 if custom_prefix:
                     custom_prefix_input = st.text_input("Custom Prefix (with brackets)", value="[CUSTOM]")
                     entry_type = custom_prefix_input
             
-            name = st.text_input("Name/Title")
+    # --- SỬA ĐỔI TẠI ĐÂY: Chia cột để thêm chỗ nhập Chapter ---
+            col_name, col_chap = st.columns([2, 4])
+    
+            with col_name:
+                name = st.text_input("Name/Title")
+        
+            with col_chap:
+        # Mặc định là 0 như bạn yêu cầu
+                source_chap = st.number_input("Source Chap", min_value=0, value=0, step=1, help="0 = Global/None")
+
             description = st.text_area("Description", height=150)
-            
+    
             col_save, col_cancel = st.columns(2)
+    
             with col_save:
                 if st.form_submit_button("💾 Save Entry", type="primary"):
                     if name and description and entry_type:
                         entity_name = f"{entry_type} {name}"
-                        
-                        # Get embedding
-                        vec = AIService.get_embedding(f"{entity_name}: {description}")
-                        
+                
+                # Get embedding
+                        vec = AIService.get_embedding(f"{entity_name}: {description}") # [5]
+                
                         if vec:
+                    # [6] Cập nhật lệnh insert có thêm source_chapter
                             supabase.table("story_bible").insert({
                                 "story_id": project_id,
                                 "entity_name": entity_name,
                                 "description": description,
-                                "embedding": vec
+                                "embedding": vec,
+                                "source_chapter": source_chap # <--- Đã thêm dòng này
                             }).execute()
-                            
+                    
                             st.success("Entry added!")
                             st.session_state['adding_bible_entry'] = False
                             st.rerun()
                         else:
                             st.error("Failed to create embedding")
-            
+                    else:
+                        st.warning("Please fill all fields")
+
             with col_cancel:
                 if st.form_submit_button("❌ Cancel"):
                     st.session_state['adding_bible_entry'] = False
@@ -3126,6 +3140,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
