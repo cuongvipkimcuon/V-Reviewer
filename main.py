@@ -1871,8 +1871,7 @@ def render_chat_tab(project_id, persona):
                     debug_notes.append(f"📚 Memory: Last {len(past_chats)} msgs")
                     # -------------------------------------------------
 
-                    # Add current message
-                messages.append({"role": "user", "content": prompt})
+                    
                 
                 # Add current message
                 messages.append({"role": "user", "content": prompt})
@@ -3122,6 +3121,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
