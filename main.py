@@ -484,8 +484,8 @@ class SessionManager:
                         st.rerun()
             except Exception as e:
                 # Nếu token lỗi thì xóa đi
-                self.cookie_manager.delete("supabase_access_token")
-                self.cookie_manager.delete("supabase_refresh_token")
+                self.cookie_manager.delete("supabase_access_token", key="del_access_check_login")
+                self.cookie_manager.delete("supabase_refresh_token", key="del_refresh_check_login")
                 return False
                 
         return False
@@ -1482,8 +1482,8 @@ def render_sidebar(session_manager):
         if st.button("🚪 Logout", use_container_width=True, type="secondary"):
             st.session_state['logging_out'] = True
             try:
-                session_manager.cookie_manager.delete("supabase_access_token")
-                session_manager.cookie_manager.delete("supabase_refresh_token")
+                session_manager.cookie_manager.delete("supabase_access_token", key="del_access_logout")
+                session_manager.cookie_manager.delete("supabase_refresh_token", key="del_refresh_logout")
             except:
                 pass
             
@@ -3082,6 +3082,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
