@@ -1692,8 +1692,24 @@ def render_chat_tab(project_id, persona):
             value=False,
             help="ON: AI only answers based on found data. No fabrication. (Temp = 0)"
         )
-        
+                # === THÊM ĐOẠN NÀY ===
+        st.session_state['router_ignore_history'] = st.toggle(
+            "⚡️ Router Ignore History",
+            value=False,
+            help="Bật cái này để Router chỉ phân tích câu hiện tại, không bị nhiễu bởi chat cũ."
+        )
+        # =====================
         st.divider()
+        st.write("### 🕰️ Context Depth")
+        history_depth = st.slider(
+            "Chat History Limit",
+            min_value=5,
+            max_value=50, 
+            value=10,
+            step=5,
+            help="Số lượng tin nhắn cũ gửi kèm. Càng cao càng nhớ dai nhưng tốn tiền hơn."
+        )
+# =====================
         
         # Crystallize logic
         with st.expander("💎 Crystallize Chat"):
@@ -3085,6 +3101,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
