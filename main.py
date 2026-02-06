@@ -1665,7 +1665,7 @@ def render_dashboard_tab(project_id):
     st.markdown("---")
     st.header("⚙️ Project Settings")
 
-    col_rename, col_danger = st.columns([6])
+    col_rename, col_danger = st.columns([3,3])
 
     # 1. TÍNH NĂNG ĐỔI TÊN (RENAME)
     with col_rename:
@@ -3203,6 +3203,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
