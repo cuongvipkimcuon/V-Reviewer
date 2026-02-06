@@ -703,7 +703,7 @@ class AIService:
         messages: List[Dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: int = 1000,
+        max_tokens: int = 8000,
         stream: bool = False,
         response_format: Optional[Dict] = None # <--- THÊM THAM SỐ NÀY
     ) -> Any:
@@ -898,7 +898,7 @@ class SmartAIRouter:
                 messages=messages,
                 model=Config.ROUTER_MODEL,
                 temperature=0.1,
-                max_tokens=500,
+                max_tokens=1500,
                 response_format={"type": "json_object"} # <--- THÊM DÒNG NÀY
             )
             
@@ -1225,7 +1225,7 @@ Output Text Only.
                 messages=messages,
                 model=Config.ROUTER_MODEL,
                 temperature=0.2,
-                max_tokens=500,
+                max_tokens=4000,
                 response_format={"type": "json_object"} # <--- THÊM DÒNG NÀY
             )
             
@@ -1277,7 +1277,7 @@ Output Text Only.
                 messages=messages,
                 model=Config.ROUTER_MODEL,
                 temperature=0.3,
-                max_tokens=200
+                max_tokens=8000
             )
             
             return response.choices[0].message.content.strip()
@@ -1842,7 +1842,7 @@ INSTRUCTIONS:
                         messages=messages,
                         model=model,
                         temperature=run_temperature,
-                        max_tokens=persona.get('max_tokens', 1500),
+                        max_tokens=persona.get('max_tokens', 4000),
                         stream=True
                     )
                     
@@ -2563,7 +2563,7 @@ def render_bible_tab(project_id, persona):
                                 messages=[{"role": "user", "content": prompt_merge}],
                                 model=Config.ROUTER_MODEL,
                                 temperature=0.3,
-                                max_tokens=500
+                                max_tokens=1500
                             )
                             
                             merged_text = response.choices[0].message.content
@@ -2695,15 +2695,38 @@ def render_bible_tab(project_id, persona):
     # Danger Zone
     st.markdown("---")
     with st.expander("💀 Danger Zone", expanded=False):
-        if st.button("💣 Clear All Bible Entries", type="secondary", use_container_width=True):
-            if st.checkbox("I understand this will delete ALL bible entries for this project"):
-                supabase.table("story_bible") \
-                    .delete() \
-                    .eq("story_id", project_id) \
-                    .execute()
-                st.success("All bible entries cleared!")
-                time.sleep(1)
+        # 1. Nếu chưa bấm nút xóa lần đầu -> Hiện nút xóa
+        if not st.session_state.get('confirm_delete_all_bible'):
+            if st.button("💣 Clear All Bible Entries", type="secondary", use_container_width=True):
+                st.session_state['confirm_delete_all_bible'] = True
                 st.rerun()
+        
+        # 2. Nếu đã bấm -> Hiện cảnh báo và 2 nút Yes/No
+        else:
+            st.warning("⚠️ CẢNH BÁO: Hành động này sẽ xóa sạch toàn bộ dữ liệu Bible và không thể khôi phục. Bạn chắc chứ?")
+            
+            col_yes, col_no = st.columns(2)
+            
+            # Nút Hủy
+            with col_no:
+                if st.button("❌ Thôi, giữ lại", use_container_width=True):
+                    st.session_state['confirm_delete_all_bible'] = False
+                    st.rerun()
+            
+            # Nút Xác nhận xóa thật
+            with col_yes:
+                if st.button("✅ Tôi chắc chắn. Xóa!", type="primary", use_container_width=True):
+                    # Thực hiện lệnh xóa
+                    supabase.table("story_bible") \
+                        .delete() \
+                        .eq("story_id", project_id) \
+                        .execute()
+                    
+                    st.success("Đã xóa sạch Bible!")
+                    # Reset trạng thái
+                    st.session_state['confirm_delete_all_bible'] = False
+                    time.sleep(1)
+                    st.rerun()
 
 def render_cost_tab():
     """Tab Cost Management"""
@@ -3038,6 +3061,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
