@@ -1854,12 +1854,17 @@ def render_chat_tab(project_id, persona):
                 
                 # Add recent chat history
                 # --- LOGIC MỚI: Dùng thanh trượt history_depth ---
-                    # Lấy giá trị từ slider (mặc định là 10 nếu chưa chỉnh)
+                    # Lấy giá trị từ slider (mặc định là 5 nếu chưa chỉnh)
                 depth = history_depth 
                     
                     # Lấy N tin nhắn gần nhất từ visible_msgs
                     # Lưu ý: visible_msgs là lịch sử cũ, chưa chứa câu prompt hiện tại
-                past_chats = visible_msgs[-depth:] 
+                if depth > 0:
+                    # Nếu > 0 thì cắt n tin nhắn cuối
+                    past_chats = visible_msgs[-depth:]
+                else:
+                    # Nếu = 0 thì danh sách rỗng (Không gửi lịch sử)
+                    past_chats = []  
                     
                 for msg in past_chats:
                     messages.append({
@@ -3121,6 +3126,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
