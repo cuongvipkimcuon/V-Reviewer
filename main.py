@@ -2571,7 +2571,7 @@ def render_bible_tab(project_id, persona):
                 if st.button("🧬 AI Merge Selected", use_container_width=True):
                     if len(selected_entries) >= 2:
                         items_text = "\n".join([f"- {e['description']}" for e in selected_entries])
-                       prompt_merge = f"""
+                        prompt_merge = f"""
                             Hãy hợp nhất các mục thông tin dưới đây thành một mục duy nhất, mạch lạc, đầy đủ chi tiết:
                             
                             {items_text}
@@ -3082,6 +3082,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
