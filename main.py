@@ -1953,7 +1953,7 @@ def render_chat_tab(project_id, persona):
                         new_rule = RuleMiningSystem.extract_rule_raw(prompt, full_response_text)
                         if new_rule:
                             st.session_state['pending_new_rule'] = new_rule
-                            st.rerun()
+                            
                     
                     elif not st.session_state.get('enable_history', True):
                         st.caption("👻 Anonymous mode: History not saved & Rule mining disabled.")
@@ -2128,7 +2128,7 @@ def render_workstation_tab(project_id, persona):
                     st.toast("✅ Đã lưu thành công!", icon="💾")
                     st.session_state.current_file_content = current_content
                     time.sleep(0.5)
-                    st.rerun()
+                    
                 except Exception as e:
                     st.error(f"Lỗi lưu: {e}")
 
@@ -3126,6 +3126,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
