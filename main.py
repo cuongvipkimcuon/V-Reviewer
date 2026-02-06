@@ -864,32 +864,36 @@ class SmartAIRouter:
             rules_context = ContextManager.get_mandatory_rules(project_id)
     # -------------------------------
         router_prompt = f"""
-        Đóng vai Project Coordinator. Phân tích User Input và Lịch sử Chat.
-        ⚠️ QUY TẮC BẮT BUỘC (MANDATORY RULES):
+        Đóng vai Điều Phối Viên Dự Án (Project Coordinator).
+        
+        ⚠️ QUY TẮC BẮT BUỘC:
         {rules_context}
+
         LỊCH SỬ CHAT:
         {chat_history_text}
         
-        USER INPUT: "{user_prompt}"
+        INPUT CỦA USER: "{user_prompt}"
         
+        NHIỆM VỤ: Phân tích intent và xác định dữ liệu cần thiết.
+
         PHÂN LOẠI INTENT:
-        1. "read_full_content": Khi user muốn "Sửa", "Refactor", "Review", "So sánh", "Viết tiếp", "Kiểm tra code/văn" -> Cần đọc NGUYÊN VĂN FILE.
-        2. "search_bible": Khi user hỏi thông tin chung, quy định, tóm tắt, tra cứu khái niệm, hay dùng từ khóa "Bible" -> Tra cứu Bible (Vector).
-        3. "chat_casual": Chào hỏi, chém gió không cần context.
-        4. "mixed_context": Cần cả file content và bible context.
-        
-        OUTPUT JSON ONLY:
+        1. "read_full_content": User muốn Sửa, Review, Viết tiếp, Kiểm tra code/văn, hoặc nhắc đến tên file cụ thể -> Cần đọc NGUYÊN VĂN FILE.
+        2. "search_bible": User hỏi thông tin chung, Lore, cốt truyện, quy định, khái niệm -> Tra cứu Bible (Vector DB).
+        3. "chat_casual": Chào hỏi, khen chê, nói chuyện phiếm không cần dữ liệu dự án.
+        4. "mixed_context": Cần cả nội dung file VÀ kiến thức Bible (Vd: "Sửa file A sao cho đúng với cốt truyện B").
+
+        OUTPUT (JSON ONLY):
         {{
-            "intent": "read_full_content" | "search_bible" | "chat_casual" | "mixed_context",
-            "target_files": ["tên file 1", "tên file 2", "tên chương..."], 
-            "target_bible_entities": ["entity1", "entity2"],
-            "reason": "Lý do ngắn gọn",
-            "rewritten_query": "Viết lại câu hỏi cho rõ nghĩa (thay thế 'nó', 'file này' bằng tên thực thể)"
+            "intent": "...",
+            "target_files": ["tên file 1", "tên file 2"],
+            "target_bible_entities": ["tên thực thể 1", "tên thực thể 2"],
+            "reason": "Lý do ngắn gọn bằng tiếng Việt",
+            "rewritten_query": "Viết lại câu hỏi của user cho rõ nghĩa hơn để search database"
         }}
         """
-        
+
         messages = [
-            {"role": "system", "content": "You are Router AI. Return only JSON."},
+            {"role": "system", "content": "Bạn là AI Router thông minh. Chỉ trả về JSON."},
             {"role": "user", "content": router_prompt}
         ]
         
@@ -898,7 +902,7 @@ class SmartAIRouter:
                 messages=messages,
                 model=Config.ROUTER_MODEL,
                 temperature=0.1,
-                max_tokens=1500,
+                max_tokens=500,
                 response_format={"type": "json_object"} # <--- THÊM DÒNG NÀY
             )
             
@@ -1011,14 +1015,12 @@ class ContextManager:
         # 2. Strict Mode Instructions
         if strict_mode:
             strict_text = """
-            \n\n‼️ STRICT MODE ACTIVATED:
-            1. ONLY answer based on information in CONTEXT.
-            2. Absolutely DO NOT use external knowledge (training data) to fabricate.
-            3. If no information is available, respond: "Project data does not contain this information."
-            4. You MUST read the [CONTEXT] or [KNOWLEDGE BASE] section if available.
-            5. If User asks about "history", "what was said", "check bible", prioritize extracting information from [CONTEXT] and answer accurately.
-            6. DO NOT refuse to answer factual data just because of character personality.
-            7. "Bible" mentioned by User is the project Database, not metaphorical.
+            \n\n‼️ CHẾ ĐỘ NGHIÊM NGẶT (STRICT MODE) ĐANG BẬT:
+            1. CHỈ trả lời dựa trên thông tin có trong [CONTEXT].
+            2. TUYỆT ĐỐI KHÔNG bịa đặt hoặc dùng kiến thức bên ngoài để điền vào chỗ trống.
+            3. Nếu không tìm thấy thông tin trong Context, hãy trả lời: "Dữ liệu dự án chưa có thông tin này."
+            4. Nếu User hỏi về "lịch sử", "cốt truyện", hãy ưu tiên trích xuất từ [KNOWLEDGE BASE].
+            5. Không từ chối trả lời các dữ liệu thực tế (fact) chỉ vì tính cách Persona.
             """
             context_parts.append(strict_text)
             total_tokens += AIService.estimate_tokens(strict_text)
@@ -1132,32 +1134,29 @@ class RuleMiningSystem:
     def extract_rule_raw(user_prompt: str, ai_response: str) -> Optional[str]:
         """Trích xuất luật thô từ hội thoại"""
         prompt = f"""
-        You are "Rule Scout". Task: Aggressively detect ANY User Preference, Style, or Instruction.
+        Bạn là "Trinh Sát Luật" (Rule Scout). Nhiệm vụ: Phát hiện sở thích/yêu cầu của User.
 
-CONVERSATION:
-- User: "{user_prompt}"
-- AI: (Previous response...)
+        HỘI THOẠI:
+        - User: "{user_prompt}"
+        - AI: (Phản hồi trước đó...)
 
-YOUR GOAL:
-Detect if the user is implying HOW they want the AI to behave, write, or format code/text.
+        MỤC TIÊU:
+        Phát hiện xem User có đang ngầm chỉ định CÁCH LÀM VIỆC, CÁCH VIẾT, hoặc ĐỊNH DẠNG không.
 
-CRITERIA (High Sensitivity):
-1. Format requests: "json only", "markdown", "list", "no code".
-2. Style adjustments: "shorter", "more detailed", "professional tone", "don't talk much".
-3. Implicit preferences: "can you...", "please...", "I prefer...", "better if...".
-4. Corrections: "wrong", "not like that", "change this".
+        TIÊU CHÍ (Độ nhạy cao):
+        1. Yêu cầu định dạng: "chỉ json", "dùng markdown", "đừng viết code", "viết ngắn thôi".
+        2. Điều chỉnh văn phong: "nghiêm túc hơn", "bớt nói nhảm", "dùng tiếng Việt".
+        3. Sửa lỗi: "sai rồi", "không phải thế", "làm thế này mới đúng".
 
-INSTRUCTION:
-- Even if the user is polite or asking a question ("Can you write this in Python?"), treat it as a rule ("Always use Python").
-- It is BETTER to extract a false positive rule than to miss a real one.
-- When in doubt, EXTRACT THE RULE.
+        HƯỚNG DẪN:
+        - Nếu User nói: "Viết cái này bằng Python nhé" -> Tạo luật: "Luôn ưu tiên dùng Python".
+        - Thà bắt nhầm còn hơn bỏ sót.
 
-OUTPUT FORMAT:
-- If a potential rule/preference is detected, output 1 concise sentence starting with a verb (Imperative mood).
-- Example: "Always provide code in Python" or "Keep responses under 50 words".
-- ONLY return "NO_RULE" if the user is strictly saying hello ("hi") or acknowledging ("ok thanks") with absolutely no other content.
+        OUTPUT:
+        - Nếu phát hiện luật: Trả về 1 câu mệnh lệnh ngắn gọn kèm ngữ cảnh (Tiếng Việt). Ví dụ: "Luôn trả về định dạng JSON khi được yêu cầu...", "Không giải thích dài dòng khi user đang khó chịu...".
+        - Nếu chỉ là chào hỏi/cảm ơn: Trả về "NO_RULE".
 
-Output Text Only.
+        Chỉ trả về Text.
         """
         
         messages = [
@@ -1198,20 +1197,21 @@ Output Text Only.
             }
         
         judge_prompt = f"""
-        New Rule: "{new_rule_content}"
-        Existing Rules in DB: "{similar_rules_str}"
-        
-        Compare relationships:
-        - CONFLICT: Direct contradiction (e.g., Old says A, New says not A).
-        - MERGE: Same topic but New is more detailed/supplementary.
-        - NEW: Different topic.
-        
-        OUTPUT JSON:
+        Luật Mới: "{new_rule_content}"
+        Luật Cũ trong DB: "{similar_rules_str}"
+
+        Nhiệm vụ: So sánh mối quan hệ.
+
+        - CONFLICT (Xung đột): Mâu thuẫn trực tiếp (Vd: Cũ bảo A, Mới bảo không A).
+        - MERGE (Gộp): Cùng chủ đề nhưng luật Mới chi tiết hơn hoặc bổ sung cho luật Cũ.
+        - NEW (Mới): Chủ đề khác hẳn.
+
+        OUTPUT JSON ONLY:
         {{
             "status": "CONFLICT" | "MERGE" | "NEW",
-            "existing_rule_summary": "Brief summary of existing rules",
-            "reason": "Reason",
-            "merged_content": "Complete merged content (if MERGE). If CONFLICT/NEW leave null."
+            "existing_rule_summary": "Tóm tắt luật cũ (Tiếng Việt)",
+            "reason": "Lý do (Tiếng Việt)",
+            "merged_content": "Nội dung luật đã gộp hoàn chỉnh (nếu MERGE). Nếu khác thì để null."
         }}
         """
         
@@ -1260,11 +1260,15 @@ Output Text Only.
         chat_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history])
         
         crystallize_prompt = f"""
-        You are Meeting Secretary ({persona_role}).
-        Task: Read conversation below and FILTER OUT NOISE.
-        Only retain and SUMMARIZE valuable information (Fact, Idea, Decision).
+        Bạn là Thư Ký Cuộc Họp ({persona_role}).
+        
+        Nhiệm vụ: Đọc đoạn chat dưới đây và LỌC BỎ NHỮNG THỨ VÔ NGHĨA.
+        Chỉ giữ lại và TÓM TẮT những thông tin giá trị (Sự kiện, Ý tưởng, Quyết định, Lore mới).
+
         CHAT LOG: {chat_text}
-        OUTPUT: Return concise summary (50-100 words). If noise, return "NO_INFO".
+
+        OUTPUT: Trả về bản tóm tắt súc tích (50-100 từ) bằng Tiếng Việt. 
+        Nếu toàn là chào hỏi vô nghĩa, trả về "NO_INFO".
         """
         
         messages = [
@@ -1814,14 +1818,15 @@ def render_chat_tab(project_id, persona):
                 messages = []
                 system_message = f"""{run_instruction}
 
-CONTEXT INFORMATION:
-{context_text}
+            THÔNG TIN NGỮ CẢNH (CONTEXT):
+            {context_text}
 
-INSTRUCTIONS:
-- Answer based on context when available
-- Be helpful and concise
-- Current mode: {persona['role']}
-"""
+            HƯỚNG DẪN:
+            - Trả lời dựa trên Context nếu có.
+            - Hữu ích, súc tích, đi thẳng vào vấn đề.
+            - Chế độ hiện tại: {persona['role']}
+            - Ngôn ngữ: Ưu tiên Tiếng Việt (trừ khi User yêu cầu khác hoặc code).
+            """
                 
                 messages.append({"role": "system", "content": system_message})
                 
@@ -2140,12 +2145,22 @@ def render_workstation_tab(project_id, persona):
                         rules = ContextManager.get_mandatory_rules(project_id)
                         
                         review_prompt = f"""
-                        RULES: {rules}
-                        CONTEXT FROM BIBLE: {context}
-                        CONTENT TO REVIEW: {content}
-                        TASK: {persona.get('review_prompt', 'Review this content')}
-                        FORMAT: Trả về Markdown đẹp mắt (Bullet points).
-                        """
+                    LUẬT DỰ ÁN: {rules}
+                    
+                    THÔNG TIN TỪ BIBLE (Context): {context}
+                    
+                    NỘI DUNG CẦN REVIEW: 
+                    {content}
+
+                    NHIỆM VỤ: {persona.get('review_prompt', 'Review nội dung này')}
+                    
+                    YÊU CẦU:
+                    1. Chỉ ra điểm mạnh/yếu.
+                    2. Phát hiện lỗi logic (plot hole) hoặc lỗi code so với Context.
+                    3. Đề xuất cải thiện cụ thể.
+                    4. Trả về định dạng Markdown đẹp mắt (Bullet points).
+                    5. Ngôn ngữ: TIẾNG VIỆT.
+                    """
                         
                         response = AIService.call_openrouter(
                             messages=[{"role": "user", "content": review_prompt}],
@@ -2237,7 +2252,7 @@ def render_workstation_tab(project_id, persona):
                                 messages=[{"role": "user", "content": ext_prompt}],
                                 model=st.session_state.get('selected_model', Config.DEFAULT_MODEL),
                                 temperature=0.3, # Tăng nhẹ để AI sáng tạo Type
-                                max_tokens=4096,
+                                max_tokens=16000,
                                 response_format={"type": "json_object"} 
                             )
     
@@ -2556,14 +2571,20 @@ def render_bible_tab(project_id, persona):
                 if st.button("🧬 AI Merge Selected", use_container_width=True):
                     if len(selected_entries) >= 2:
                         items_text = "\n".join([f"- {e['description']}" for e in selected_entries])
-                        prompt_merge = f"Merge these items into one coherent entry:\n{items_text}"
+                       prompt_merge = f"""
+                            Hãy hợp nhất các mục thông tin dưới đây thành một mục duy nhất, mạch lạc, đầy đủ chi tiết:
+                            
+                            {items_text}
+                            
+                            Yêu cầu: Viết lại bằng Tiếng Việt, giữ nguyên các thuật ngữ quan trọng.
+                            """
                         
                         try:
                             response = AIService.call_openrouter(
                                 messages=[{"role": "user", "content": prompt_merge}],
                                 model=Config.ROUTER_MODEL,
                                 temperature=0.3,
-                                max_tokens=1500
+                                max_tokens=4000
                             )
                             
                             merged_text = response.choices[0].message.content
@@ -3061,6 +3082,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
