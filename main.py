@@ -855,11 +855,18 @@ class SmartAIRouter:
     """Bộ định tuyến AI thông minh với hybrid search"""
     
     @staticmethod
-    def ai_router_pro_v2(user_prompt: str, chat_history_text: str) -> Dict:
+    def ai_router_pro_v2(user_prompt: str, chat_history_text: str, project_id: str = None) -> Dict:
         """Router V2: Phân tích Intent và Target Files"""
+        # --- ĐOẠN CODE MỚI: LẤY LUẬT ---
+        rules_context = ""
+        if project_id:
+        # Gọi hàm có sẵn trong ContextManager để lấy luật
+            rules_context = ContextManager.get_mandatory_rules(project_id)
+    # -------------------------------
         router_prompt = f"""
         Đóng vai Project Coordinator. Phân tích User Input và Lịch sử Chat.
-        
+        ⚠️ QUY TẮC BẮT BUỘC (MANDATORY RULES):
+        {rules_context}
         LỊCH SỬ CHAT:
         {chat_history_text}
         
@@ -1055,6 +1062,56 @@ class ContextManager:
                 context_parts.append(bible_context)
                 total_tokens += AIService.estimate_tokens(bible_context)
                 sources.append("📚 Bible Search")
+            # 2. LOGIC MỚI: SUY LUẬN NGƯỢC (REVERSE LOOKUP) [2, 3]
+            # Tự động tìm chương truyện gốc chứa entity và nạp vào context
+            try:
+                services = init_services()
+                supabase = services['supabase']
+                related_chapter_nums = set()
+
+                # Chỉ chạy nếu Router đã xác định được entity (vd: [ITEM] Kiếm Thần)
+                if target_bible_entities:
+                    for entity in target_bible_entities:
+                        # Tra bảng story_bible để xem entity này xuất hiện ở chương nào (source_chapter)
+                        res = supabase.table("story_bible") \
+                            .select("source_chapter") \
+                            .eq("story_id", project_id) \
+                            .ilike("entity_name", f"%{entity}%") \
+                            .execute()
+                        
+                        if res.data:
+                            for row in res.data:
+                                # Chỉ lấy nếu source_chapter hợp lệ (>0)
+                                if row.get('source_chapter') and row['source_chapter'] > 0:
+                                    related_chapter_nums.add(row['source_chapter'])
+
+                # Nếu tìm thấy chương liên quan, lấy tên file và tải nội dung
+                if related_chapter_nums:
+                    # Lấy Title (tên file) từ bảng chapters
+                    chap_res = supabase.table("chapters") \
+                        .select("title") \
+                        .eq("story_id", project_id) \
+                        .in_("chapter_number", list(related_chapter_nums)) \
+                        .execute()
+                    
+                    if chap_res.data:
+                        # Tạo danh sách tên file
+                        auto_files = [c['title'] for c in chap_res.data if c.get('title')]
+                        
+                        if auto_files:
+                            # Tái sử dụng hàm load_full_content có sẵn
+                            extra_text, extra_sources = ContextManager.load_full_content(auto_files, project_id)
+                            
+                            if extra_text:
+                                context_parts.append(f"\n--- 🕵️ AUTO-DETECTED CONTEXT (REVERSE LOOKUP) ---\n{extra_text}")
+                                # Thêm vào nguồn trích dẫn để user biết AI đang đọc file nào
+                                sources.extend([f"{s} (Auto)" for s in extra_sources])
+                                total_tokens += AIService.estimate_tokens(extra_text)
+
+            except Exception as e:
+                print(f"Reverse lookup error: {e}")
+                # Không crash app nếu lỗi tính năng phụ này
+                pass
         
         # 5. File content cho mixed_context
         if intent == "mixed_context" and target_files:
@@ -1727,7 +1784,7 @@ def render_chat_tab(project_id, persona):
                     for m in visible_msgs[-5:]
                 ])
                 
-                router_out = SmartAIRouter.ai_router_pro_v2(prompt, recent_history_text)
+                router_out = SmartAIRouter.ai_router_pro_v2(prompt, recent_history_text, project_id)
                 intent = router_out.get('intent', 'chat_casual')
                 targets = router_out.get('target_files', [])
                 rewritten_query = router_out.get('rewritten_query', prompt)
@@ -2242,12 +2299,21 @@ def render_workstation_tab(project_id, persona):
                             
                             for idx, item in enumerate(unique_items):
                                 desc = item.get('description', '')
+                                raw_name = item.get('entity_name', 'Unknown')
+                                raw_type = item.get('type', 'Other').upper().replace(" ", "_") # Chuẩn hóa type
+
+                                # --- ĐOẠN CODE MỚI: TỰ ĐỘNG GẮN TAG ---
+                                # Nếu tên chưa có dấu ngoặc vuông [] ở đầu, thì tự thêm tag
+                                if not raw_name.startswith("["):
+                                    final_name = f"[{raw_type}] {raw_name}"
+                                else:
+                                    final_name = raw_name
                                 if desc:
                                     vec = AIService.get_embedding(desc)
                                     if vec:
                                         supabase.table("story_bible").insert({
                                             "story_id": project_id,
-                                            "entity_name": item.get('entity_name', 'Unknown'),
+                                            "entity_name": final_name,
                                             "description": desc,
                                             "embedding": vec,
                                             "source_chapter": chap_num
@@ -2931,6 +2997,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
