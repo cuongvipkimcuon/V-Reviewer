@@ -2213,7 +2213,7 @@ def render_workstation_tab(project_id, persona):
                     my_bar = st.progress(0, text=progress_text)
     
                     # Hàm cắt nhỏ văn bản để tránh quá tải token
-                    def chunk_text(text, chunk_size=4000): # Giảm size chút cho an toàn
+                    def chunk_text(text, chunk_size=25000): # Giảm size chút cho an toàn
                         return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
     
                     chunks = chunk_text(content)
@@ -2255,7 +2255,7 @@ def render_workstation_tab(project_id, persona):
                                 messages=[{"role": "user", "content": ext_prompt}],
                                 model=st.session_state.get('selected_model', Config.DEFAULT_MODEL),
                                 temperature=0.0, # Tăng nhẹ để AI sáng tạo Type
-                                max_tokens=64000,
+                                max_tokens=16000,
                                 response_format={"type": "json_object"} 
                             )
     
@@ -3085,6 +3085,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
