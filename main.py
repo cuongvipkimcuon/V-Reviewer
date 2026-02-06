@@ -1799,10 +1799,16 @@ def render_chat_tab(project_id, persona):
                 now_timestamp = datetime.utcnow().isoformat()
                 
                 # A. ROUTING
-                recent_history_text = "\n".join([
-                    f"{m['role']}: {m['content']}" 
-                    for m in visible_msgs[-5:]
-                ])
+                if st.session_state.get('router_ignore_history'):
+                            # Nếu bật: Gửi lịch sử rỗng để Router chỉ tập trung vào câu hiện tại
+                    recent_history_text = "NO_HISTORY_AVAILABLE (User requested to ignore context)"
+                    debug_notes.append("⚡️ Router: Ignored History")
+                else:
+                            # Nếu tắt: Vẫn lấy 5 tin gần nhất để Router hiểu ngữ cảnh ngắn
+                    recent_history_text = "\n".join([
+                        f"{m['role']}: {m['content']}"
+                        for m in visible_msgs[-5:]
+                        ])
                 
                 router_out = SmartAIRouter.ai_router_pro_v2(prompt, recent_history_text, project_id)
                 intent = router_out.get('intent', 'chat_casual')
@@ -1847,11 +1853,26 @@ def render_chat_tab(project_id, persona):
                 messages.append({"role": "system", "content": system_message})
                 
                 # Add recent chat history
-                for msg in visible_msgs[-6:-1]:
+                # --- LOGIC MỚI: Dùng thanh trượt history_depth ---
+                    # Lấy giá trị từ slider (mặc định là 10 nếu chưa chỉnh)
+                depth = history_depth 
+                    
+                    # Lấy N tin nhắn gần nhất từ visible_msgs
+                    # Lưu ý: visible_msgs là lịch sử cũ, chưa chứa câu prompt hiện tại
+                past_chats = visible_msgs[-depth:] 
+                    
+                for msg in past_chats:
                     messages.append({
                         "role": msg["role"],
                         "content": msg["content"]
                     })
+                    
+                if len(past_chats) > 5:
+                    debug_notes.append(f"📚 Memory: Last {len(past_chats)} msgs")
+                    # -------------------------------------------------
+
+                    # Add current message
+                messages.append({"role": "user", "content": prompt})
                 
                 # Add current message
                 messages.append({"role": "user", "content": prompt})
@@ -3101,6 +3122,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
