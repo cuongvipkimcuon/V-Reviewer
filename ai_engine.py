@@ -1340,18 +1340,17 @@ def execute_split_logic(
                     st.error("❌ **Không tìm thấy dấu hiệu phân chia chương.** Vui lòng kiểm tra lại định dạng hoặc thử keyword/pattern khác.")
                 return []
             
+            # Phần trước từ khóa đầu (nếu có)
             if matches[0].start() > 0:
                 part_content = content[0:matches[0].start()].strip()
                 if part_content:
-                    title = matches[0].group(0).strip()[:50] if matches[0].group(0) else "Phần 0"
-                    if not title or len(title.strip()) < 2:
-                        first_line = part_content.splitlines()[0] if part_content.splitlines() else ""
-                        title = first_line[:50] if first_line else "Phần 0"
+                    title = "Phần mở đầu" if not out else "Phần 0"
                     out.append({"title": title, "content": part_content, "order": 1})
             
+            # Nội dung NẰM GIỮA hai từ khóa: từ sau keyword[i] đến trước keyword[i+1]
             for i, match in enumerate(matches):
-                start = match.start()
-                end = matches[i+1].start() if i+1 < len(matches) else len(content)
+                start = match.end()  # Bắt đầu SAU từ khóa hiện tại
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
                 part_content = content[start:end].strip()
                 if not part_content:
                     continue

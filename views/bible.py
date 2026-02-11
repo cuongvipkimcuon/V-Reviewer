@@ -746,6 +746,76 @@ def render_bible_tab(project_id, persona):
     else:
         st.info("No bible entries found. Add some to build your project's knowledge base!")
 
+    # --- Global Relationships management ---
+    st.markdown("---")
+    with st.expander("🔗 All Relationships", expanded=False):
+        try:
+            rel_res = supabase.table("entity_relations").select("*").eq("story_id", project_id).execute()
+            all_rels = rel_res.data if rel_res and rel_res.data else []
+        except Exception as e:
+            st.error(f"Lỗi khi tải quan hệ: {e}")
+            all_rels = []
+
+        if not all_rels:
+            st.info("Chưa có quan hệ nào trong Bible.")
+        else:
+            id_to_name_all = {e["id"]: e.get("entity_name", "") for e in bible_data_all}
+            rows = []
+            for r in all_rels:
+                src_id = r.get("entity_id") or r.get("source_entity_id") or r.get("from_entity_id")
+                tgt_id = r.get("target_entity_id") or r.get("to_entity_id")
+                rtype = r.get("relation_type") or r.get("relation") or "—"
+                rows.append(
+                    {
+                        "ID": r.get("id"),
+                        "Source": id_to_name_all.get(src_id, f"ID {src_id}"),
+                        "Target": id_to_name_all.get(tgt_id, f"ID {tgt_id}"),
+                        "Type": rtype,
+                    }
+                )
+            if rows:
+                df_rels = pd.DataFrame(rows)
+                st.dataframe(df_rels, use_container_width=True, hide_index=True)
+
+            user_id = getattr(st.session_state.get("user"), "id", None) or ""
+            user_email = getattr(st.session_state.get("user"), "email", None) or ""
+            can_delete = check_permission(user_id, user_email, project_id, "delete")
+
+            if not can_delete:
+                st.caption("Bạn chỉ có quyền xem. Liên hệ Owner nếu muốn chỉnh sửa hoặc xóa quan hệ.")
+            else:
+                sel_ids = st.multiselect(
+                    "Chọn quan hệ để xóa",
+                    options=[row["ID"] for row in rows],
+                    format_func=lambda rid: f"Relation #{rid}",
+                    key="rel_multi_select",
+                )
+                col_del_rel, col_clear_rel = st.columns(2)
+                with col_del_rel:
+                    if sel_ids and st.button("🗑️ Xóa quan hệ đã chọn", use_container_width=True, key="rel_delete_selected"):
+                        try:
+                            supabase.table("entity_relations").delete().in_("id", sel_ids).execute()
+                            st.success(f"Đã xóa {len(sel_ids)} quan hệ.")
+                            invalidate_cache_and_rerun()
+                        except Exception as ex:
+                            st.error(f"Lỗi xóa: {ex}")
+                with col_clear_rel:
+                    confirm_clear_rel = st.checkbox(
+                        "Tôi chắc chắn muốn xóa TẤT CẢ quan hệ",
+                        key="rel_confirm_clear_all",
+                    )
+                    if st.button("💣 Xóa sạch tất cả quan hệ", type="secondary", use_container_width=True, key="rel_clear_all"):
+                        if not confirm_clear_rel:
+                            st.warning("Vui lòng tick xác nhận trước khi xóa toàn bộ quan hệ.")
+                        else:
+                            try:
+                                supabase.table("entity_relations").delete().eq("story_id", project_id).execute()
+                                st.success("Đã xóa sạch tất cả quan hệ.")
+                                st.session_state["rel_confirm_clear_all"] = False
+                                invalidate_cache_and_rerun()
+                            except Exception as ex:
+                                st.error(f"Lỗi xóa: {ex}")
+
     st.markdown("---")
     with st.expander("💀 Danger Zone", expanded=False):
         if not st.session_state.get('confirm_delete_all_bible'):

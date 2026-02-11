@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from config import Config, init_services
-from ai_engine import AIService, HybridSearch, ContextManager, generate_chapter_metadata, analyze_split_strategy, execute_split_logic
+from ai_engine import AIService, HybridSearch, ContextManager, generate_chapter_metadata, analyze_split_strategy, execute_split_logic, suggest_relations
 from utils.file_importer import UniversalLoader
 from utils.auth_manager import check_permission, submit_pending_change
 from utils.cache_helpers import get_chapters_cached, invalidate_cache_and_rerun
@@ -17,6 +17,18 @@ def render_workstation_tab(project_id, persona):
     """
     Tab Workstation - Cache chapter list, fragment cho khung soạn thảo để giảm rerun toàn trang.
     """
+    # Custom CSS cho UI gọn và thoáng
+    st.markdown("""
+    <style>
+    /* Giảm padding chật giữa các cột */
+    div[data-testid="stHorizontalBlock"] > div { padding: 0 0.35rem; }
+    /* Khoảng cách cho text area */
+    div[data-testid="stVerticalBlock"] > div { padding-top: 0.5rem; }
+    /* Expander gọn hơn */
+    .streamlit-expanderHeader { font-size: 0.95rem; }
+    </style>
+    """, unsafe_allow_html=True)
+
     st.subheader("✍️ Writing Workstation")
 
     if not project_id:
@@ -27,107 +39,8 @@ def render_workstation_tab(project_id, persona):
     file_list = get_chapters_cached(project_id, st.session_state.get("update_trigger", 0))
     file_options = {}
     for f in file_list:
-        display_name = f"📄 #{f['chapter_number']}: {f['title']}" if f.get('title') else f"📄 #{f['chapter_number']}"
+        display_name = f"📄 #{f['chapter_number']}: {f.get('title') or f'Chapter {f['chapter_number']}'}"
         file_options[display_name] = f["chapter_number"]
-
-    # --- Thư viện chương: Expander thu gọn + Bảng Dataframe ---
-    with st.expander(f"📚 Thư viện chương đã viết ({len(file_list)} chương)", expanded=False):
-        chapters_data = file_list or []
-
-        if chapters_data:
-            df_data = []
-            for ch in chapters_data:
-                num = ch.get("chapter_number", 0)
-                title = ch.get("title") or f"Chương {num}"
-                summary_raw = ch.get("summary") or ""
-                summary = summary_raw[:100] + ("..." if len(summary_raw) > 100 else "")
-                created = ch.get("created_at", "")
-                if created:
-                    try:
-                        if isinstance(created, str):
-                            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-                            created = dt.strftime("%d/%m/%Y %H:%M")
-                        else:
-                            created = str(created)[:16]
-                    except Exception:
-                        created = str(created)[:16] if created else "N/A"
-                df_data.append(
-                    {
-                        "Số chương": num,
-                        "Tiêu đề": title,
-                        "Tóm tắt": summary,
-                        "Ngày tạo": created or "N/A",
-                    }
-                )
-
-            df = pd.DataFrame(df_data)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-
-            st.markdown("---")
-            col_del, col_clear = st.columns([3, 1])
-
-            with col_del:
-                st.caption("🗑️ Chọn chương để xóa:")
-                selected_nums = st.multiselect(
-                    "Chọn chương cần xóa",
-                    options=[ch["Số chương"] for ch in df_data],
-                    format_func=lambda x: f"#{x}: {next((c['Tiêu đề'] for c in df_data if c['Số chương'] == x), '')}",
-                    key="ws_delete_selected_chapters",
-                    help="Chọn một hoặc nhiều chương để xóa.",
-                )
-                if selected_nums and st.button(
-                    "🗑️ Xóa các chương đã chọn", type="secondary", key="ws_delete_selected_btn"
-                ):
-                    uid = getattr(st.session_state.get("user"), "id", None) or ""
-                    uem = getattr(st.session_state.get("user"), "email", None) or ""
-                    if check_permission(uid, uem, project_id, "write"):
-                        try:
-                            services = init_services()
-                            if services:
-                                supabase = services["supabase"]
-                                for num in selected_nums:
-                                    supabase.table("chapters").delete().eq(
-                                        "story_id", project_id
-                                    ).eq("chapter_number", num).execute()
-                                st.success(f"Đã xóa {len(selected_nums)} chương.")
-                                # Dọn cache + tăng update_trigger + rerun theo yêu cầu
-                                st.cache_data.clear()
-                                st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
-                                st.rerun()
-                        except Exception as e:
-                            st.error(f"Lỗi xóa: {e}")
-                    else:
-                        st.warning("Chỉ Owner mới được xóa chương.")
-
-            with col_clear:
-                st.caption("⚠️ Xóa sạch:")
-                confirm_clear = st.checkbox(
-                    "Tôi chắc chắn muốn xóa TẤT CẢ",
-                    key="ws_confirm_clear_all",
-                    help="Bật checkbox này để kích hoạt nút xóa sạch.",
-                )
-                if confirm_clear:
-                    if st.button("🔥 Xóa sạch dự án", type="primary", key="ws_clear_all_btn"):
-                        uid = getattr(st.session_state.get("user"), "id", None) or ""
-                        uem = getattr(st.session_state.get("user"), "email", None) or ""
-                        if check_permission(uid, uem, project_id, "write"):
-                            try:
-                                services = init_services()
-                                if services:
-                                    supabase = services["supabase"]
-                                    supabase.table("chapters").delete().eq("story_id", project_id).execute()
-                                    st.success("✅ Đã xóa sạch tất cả chương!")
-                                    st.session_state["ws_confirm_clear_all"] = False
-                                    # Dọn cache + tăng update_trigger + rerun theo yêu cầu
-                                    st.cache_data.clear()
-                                    st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
-                                    st.rerun()
-                            except Exception as e:
-                                st.error(f"Lỗi xóa sạch: {e}")
-                        else:
-                            st.warning("Chỉ Owner mới được xóa sạch dự án.")
-        else:
-            st.info("Chưa có chương nào.")
 
     @st.fragment
     def _editor_fragment():
@@ -139,16 +52,17 @@ def render_workstation_tab(project_id, persona):
             st.warning("Không kết nối được dịch vụ.")
             return
         supabase = services["supabase"]
-        c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 1])
-        with c1:
-            selected_file = st.selectbox(
-                "Select File",
-                ["+ New File"] + list(file_options.keys()),
-                label_visibility="collapsed",
-                key="workstation_file_select",
-            )
+
+        selected_file = st.selectbox(
+            "Chọn chương",
+            ["+ Tạo chương mới"] + list(file_options.keys()),
+            label_visibility="collapsed",
+            key="workstation_file_select",
+        )
+
         chap_num = 0
-        if selected_file == "+ New File":
+        selected_chapter_row = None
+        if selected_file == "+ Tạo chương mới":
             chap_num = len(file_list) + 1
             db_content = ""
             db_review = ""
@@ -156,11 +70,17 @@ def render_workstation_tab(project_id, persona):
         else:
             chap_num = file_options.get(selected_file, 1)
             try:
-                res = supabase.table("chapters").select(
-                    "content, title, review_content"
-                ).eq("story_id", project_id).eq("chapter_number", chap_num).execute()
+                res = (
+                    supabase.table("chapters")
+                    .select("*")
+                    .eq("story_id", project_id)
+                    .eq("chapter_number", chap_num)
+                    .limit(1)
+                    .execute()
+                )
                 if res.data and len(res.data) > 0:
                     row = res.data[0]
+                    selected_chapter_row = row
                     db_content = row.get("content") or ""
                     db_title = row.get("title") or f"Chapter {chap_num}"
                     db_review = row.get("review_content") or ""
@@ -173,6 +93,23 @@ def render_workstation_tab(project_id, persona):
                 db_content = ""
                 db_title = f"Chapter {chap_num}"
                 db_review = ""
+
+        # Toolbar: các nút action gọn trên 1 hàng
+        btn_cols = st.columns([2, 1, 1, 1, 1, 1, 2])
+        with btn_cols[0]:
+            updated_str = "—"
+            if selected_chapter_row:
+                updated = selected_chapter_row.get("updated_at") or selected_chapter_row.get("created_at", "")
+                if updated:
+                    try:
+                        if isinstance(updated, str):
+                            dt_u = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                            updated_str = dt_u.strftime("%d/%m/%Y %H:%M")
+                        else:
+                            updated_str = str(updated)[:16]
+                    except Exception:
+                        updated_str = str(updated)[:16] if updated else "—"
+            st.caption(f"📅 Cập nhật: {updated_str}")
 
         def _update_metadata_background(pid, num, content_text):
             try:
@@ -195,8 +132,8 @@ def render_workstation_tab(project_id, persona):
             except Exception as e:
                 print(f"Background metadata update error: {e}")
 
-        with c2:
-            if st.button("💾 Save", use_container_width=True, key="ws_save_btn"):
+        with btn_cols[1]:
+            if st.button("💾 Lưu", use_container_width=True, key="ws_save_btn"):
                 current_content = st.session_state.get(f"file_content_{chap_num}", "")
                 current_title = st.session_state.get(f"file_title_{chap_num}", db_title)
                 if current_content:
@@ -241,19 +178,68 @@ def render_workstation_tab(project_id, persona):
                     except Exception as e:
                         st.error(f"Lỗi lưu: {e}")
 
-        with c3:
+        with btn_cols[2]:
             if st.button("🚀 Review", use_container_width=True, type="primary", key="ws_review_btn"):
                 st.session_state["trigger_ai_review"] = True
                 st.rerun()
-        with c4:
+        with btn_cols[3]:
             if st.button("📥 Extract", use_container_width=True, key="ws_extract_btn"):
                 st.session_state["extract_bible_mode"] = True
                 st.session_state["temp_extracted_data"] = None
                 st.rerun()
-        with c5:
+        with btn_cols[4]:
             if st.button("📂 Import", use_container_width=True, key="ws_import_btn"):
                 st.session_state["workstation_import_mode"] = True
                 st.rerun()
+        with btn_cols[5]:
+            if chap_num and st.button("🗑️ Xóa", use_container_width=True, key="ws_delete_current"):
+                uid = getattr(st.session_state.get("user"), "id", None) or ""
+                uem = getattr(st.session_state.get("user"), "email", None) or ""
+                if check_permission(uid, uem, project_id, "write"):
+                    try:
+                        supabase.table("chapters").delete().eq("story_id", project_id).eq("chapter_number", chap_num).execute()
+                        st.success(f"Đã xóa chương #{chap_num}.")
+                        st.cache_data.clear()
+                        st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Lỗi xóa chương: {e}")
+                else:
+                    st.warning("Chỉ Owner mới được xóa chương.")
+        with btn_cols[6]:
+            confirm_clear_all = st.checkbox(
+                "Xóa hết", key="ws_confirm_clear_all_top", help="Bật để kích hoạt nút xóa sạch.",
+            )
+            if confirm_clear_all and st.button("🔥 Xóa sạch", type="secondary", use_container_width=True, key="ws_clear_all_btn_top"):
+                uid = getattr(st.session_state.get("user"), "id", None) or ""
+                uem = getattr(st.session_state.get("user"), "email", None) or ""
+                if check_permission(uid, uem, project_id, "write"):
+                    try:
+                        supabase.table("chapters").delete().eq("story_id", project_id).execute()
+                        st.success("✅ Đã xóa sạch tất cả chương!")
+                        # st.session_state["ws_confirm_clear_all_top"] = False
+                        st.cache_data.clear()
+                        st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Lỗi xóa sạch: {e}")
+                else:
+                    st.warning("Chỉ Owner mới được xóa sạch dự án.")
+
+        # Tóm tắt & Art style trong expander thu gọn
+        if selected_chapter_row:
+            with st.expander("📋 Tóm tắt & Art style", expanded=False):
+                sum_text = selected_chapter_row.get("summary") or "—"
+                art_text = selected_chapter_row.get("art_style") or "—"
+                col_s, col_a = st.columns(2)
+                with col_s:
+                    st.markdown("**Tóm tắt**")
+                    st.write(sum_text if len(str(sum_text)) < 500 else str(sum_text)[:500] + "...")
+                with col_a:
+                    st.markdown("**Art style**")
+                    st.write(art_text if len(str(art_text)) < 300 else str(art_text)[:300] + "...")
+
+        st.divider()
 
         if st.session_state.get("workstation_import_mode"):
             st.markdown("---")
@@ -270,6 +256,10 @@ def render_workstation_tab(project_id, persona):
                     st.error(err)
                 elif text:
                     st.session_state["workstation_imported_text"] = text
+                    # Lưu phần mở rộng để áp logic cắt: PDF không cắt, CSV/XLS dùng sheet/row
+                    fname = getattr(uploaded, "name", "") or ""
+                    ext = "." + fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                    st.session_state["workstation_import_ext"] = ext
                     st.text_area(
                         "Nội dung đã đọc (xem trước)",
                         value=text[:50000],
@@ -279,6 +269,8 @@ def render_workstation_tab(project_id, persona):
                         help="Xem trước nội dung file đã parse. Dùng Thay thế/Thêm vào cuối hoặc ✂️ Cắt thông minh.",
                     )
                     st.caption(f"Tổng {len(text)} ký tự.")
+                    import_ext = st.session_state.get("workstation_import_ext", "")
+                    is_pdf = import_ext == ".pdf"
                     col_replace, col_append, col_cut, col_cancel = st.columns(4)
                     with col_replace:
                         if st.button("✅ Thay thế", type="primary", use_container_width=True, key="imp_replace", help="Thay nội dung chương hiện tại bằng file."):
@@ -286,6 +278,7 @@ def render_workstation_tab(project_id, persona):
                             st.session_state["workstation_import_mode"] = False
                             st.session_state.pop("workstation_imported_text", None)
                             st.session_state.pop("workstation_split_preview", None)
+                            st.session_state.pop("workstation_import_ext", None)
                             st.success("Đã thay thế. Nhớ bấm Save để lưu DB.")
                             st.rerun()
                     with col_append:
@@ -295,19 +288,24 @@ def render_workstation_tab(project_id, persona):
                             st.session_state["workstation_import_mode"] = False
                             st.session_state.pop("workstation_imported_text", None)
                             st.session_state.pop("workstation_split_preview", None)
+                            st.session_state.pop("workstation_import_ext", None)
                             st.success("Đã thêm vào cuối. Nhớ bấm Save.")
                             st.rerun()
                     with col_cut:
-                        if st.button("✂️ Cắt", use_container_width=True, key="imp_smart_split", help="AI cắt theo chương/entity/sheet, đề xuất nhiều phần để lưu thành nhiều chương."):
-                            st.session_state["workstation_split_mode"] = True
-                            st.session_state["workstation_imported_text"] = text
-                            st.rerun()
+                        if not is_pdf:
+                            if st.button("✂️ Cắt", use_container_width=True, key="imp_smart_split", help="AI cắt theo chương/entity/sheet, đề xuất nhiều phần để lưu thành nhiều chương."):
+                                st.session_state["workstation_split_mode"] = True
+                                st.session_state["workstation_imported_text"] = text
+                                st.rerun()
+                        else:
+                            st.caption("⚠️ PDF: không hỗ trợ cắt tự động.")
                     with col_cancel:
                         if st.button("❌ Hủy", use_container_width=True, key="imp_cancel"):
                             st.session_state["workstation_import_mode"] = False
                             st.session_state.pop("workstation_imported_text", None)
                             st.session_state.pop("workstation_split_preview", None)
                             st.session_state.pop("workstation_split_mode", None)
+                            st.session_state.pop("workstation_import_ext", None)
                             st.rerun()
 
                     # --- Workflow Cắt thông minh: AI Suggest (nhẹ) -> Python Execute (mạnh) ---
@@ -315,13 +313,17 @@ def render_workstation_tab(project_id, persona):
                     if st.session_state.get("workstation_split_mode") and text_for_split:
                         st.markdown("---")
                         st.subheader("✂️ Cắt thông minh")
-                        st.caption("💡 AI phân tích mẫu rải rác (80 đầu + 80 giữa + 80 cuối) để tìm quy luật, Python dùng Regex cắt toàn bộ file.")
+                        import_ext_split = st.session_state.get("workstation_import_ext", "")
+                        # CSV/XLS mặc định excel_export (chia theo sheet/row); TXT/MD/DOCX mặc định story (chia theo từ khóa)
+                        default_idx = 2 if import_ext_split in (".csv", ".xls", ".xlsx") else 0
+                        st.caption("💡 Text: cắt theo từ khóa (nội dung nằm giữa 2 từ khóa). CSV/XLS: cắt theo Sheet hoặc số dòng.")
                         file_type_choice = st.radio(
                             "Loại nội dung",
                             ["story", "character_data", "excel_export"],
-                            format_func=lambda x: {"story": "📖 Truyện (theo chương)", "character_data": "👤 Nhân vật/Entity", "excel_export": "📊 Excel/Sheet"}[x],
+                            index=default_idx,
+                            format_func=lambda x: {"story": "📖 Truyện (từ khóa)", "character_data": "👤 Nhân vật/Entity", "excel_export": "📊 Excel/CSV (sheet/số dòng)"}[x],
                             key="split_type_radio",
-                            help="Chọn loại để AI tìm quy luật phân cách phù hợp.",
+                            help="Text: nội dung nằm gọn giữa 2 từ khóa. CSV/XLS: chia theo sheet hoặc tọa độ (số dòng).",
                         )
                         context_hint = st.text_input("Gợi ý thêm (tùy chọn)", placeholder="VD: Mỗi chương bắt đầu bằng 'Chương N'", key="split_hint")
                         
@@ -385,6 +387,7 @@ def render_workstation_tab(project_id, persona):
                                             st.session_state.pop("workstation_split_preview", None)
                                             st.session_state.pop("workstation_split_strategy", None)
                                             st.session_state.pop("workstation_split_mode", None)
+                                            st.session_state.pop("workstation_import_ext", None)
                                             invalidate_cache_and_rerun()
                                     except Exception as e:
                                         st.error(f"Lỗi lưu: {e}")
@@ -400,9 +403,8 @@ def render_workstation_tab(project_id, persona):
                     st.session_state.pop("workstation_imported_text", None)
                     st.rerun()
 
-        st.markdown("---")
         file_title = st.text_input(
-            "Tiêu đề chương:",
+            "Tiêu đề chương",
             value=db_title,
             key=f"file_title_{chap_num}",
             label_visibility="collapsed",
@@ -474,8 +476,8 @@ def render_workstation_tab(project_id, persona):
     _editor_fragment()
 
     if st.session_state.get("extract_bible_mode"):
-        sel = st.session_state.get("workstation_file_select", "+ New File")
-        if sel == "+ New File":
+        sel = st.session_state.get("workstation_file_select", "+ Tạo chương mới")
+        if sel == "+ Tạo chương mới":
             _chap = len(file_list) + 1
         else:
             _chap = file_options.get(sel, 1)
@@ -490,10 +492,31 @@ def render_workstation_tab(project_id, persona):
                 has_data = st.session_state.get('temp_extracted_data') is not None
 
                 if not has_data:
-                    st.info("💡 Hệ thống sẽ đọc hiểu văn bản, tự động phát hiện Nhân vật, Chiêu thức, Địa danh... và đặt loại (Type) theo ngữ cảnh.")
+                    st.info("💡 Extract: (1) Tóm tắt + Art style → lưu chapters, (2) Bible → xác nhận, (3) Relation → xác nhận.")
 
                     if st.button("▶️ Bắt đầu phân tích", type="primary", key="extract_start"):
                         my_bar = st.progress(0, text="Đang khởi động bộ não...")
+
+                        def _save_metadata_async(pid, num, content_text):
+                            try:
+                                meta = generate_chapter_metadata(content_text)
+                                if meta:
+                                    svc = init_services()
+                                    if svc:
+                                        sb = svc["supabase"]
+                                        payload = {}
+                                        if meta.get("summary") is not None:
+                                            payload["summary"] = meta["summary"]
+                                        if meta.get("art_style") is not None:
+                                            payload["art_style"] = meta["art_style"]
+                                        if payload:
+                                            sb.table("chapters").update(payload).eq("story_id", pid).eq("chapter_number", num).execute()
+                            except Exception:
+                                pass
+
+                        # (1) Async: tóm tắt + art_style lưu vào chapters
+                        thread = threading.Thread(target=_save_metadata_async, args=(project_id, _chap, content), daemon=True)
+                        thread.start()
 
                         def chunk_text(text, chunk_size=64000):
                             return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
@@ -564,6 +587,9 @@ def render_workstation_tab(project_id, persona):
                             time.sleep(0.5)
                             my_bar.empty()
                             st.session_state['temp_extracted_data'] = all_extracted_items
+                            st.session_state['extract_chapter_num'] = _chap
+                            st.session_state['extract_content'] = content
+                            st.session_state['extract_bible_saved'] = False
                             st.rerun()
                         except Exception as e:
                             st.error(f"Lỗi hệ thống: {e}")
@@ -601,39 +627,150 @@ def render_workstation_tab(project_id, persona):
                                 st.dataframe(df_preview[['entity_name', 'type', 'description']], use_container_width=True)
                             else:
                                 st.dataframe(df_preview, use_container_width=True)
-                        c_save, c_cancel = st.columns([1, 1])
-                        with c_save:
-                            if st.button("💾 Lưu tất cả vào Bible", type="primary", use_container_width=True, key="extract_save_all"):
-                                count = 0
-                                prog = st.progress(0)
-                                total = len(unique_items)
-                                for idx, item in enumerate(unique_items):
-                                    desc = item.get('description', '')
-                                    raw_name = item.get('entity_name', 'Unknown')
-                                    raw_type_str = item.get('type', 'Khác').strip()
-                                    prefix_key = Config.map_extract_type_to_prefix(raw_type_str, desc)
-                                    final_name = f"[{prefix_key}] {raw_name}" if not raw_name.startswith("[") else raw_name
-                                    if desc:
-                                        vec = AIService.get_embedding(desc)
-                                        if vec:
-                                            supabase.table("story_bible").insert({
-                                                "story_id": project_id,
-                                                "entity_name": final_name,
-                                                "description": desc,
-                                                "embedding": vec,
-                                                "source_chapter": st.session_state.get('current_file_num', 0)
-                                            }).execute()
-                                            count += 1
-                                    prog.progress(int((idx + 1) / total * 100))
-                                st.balloons()
-                                st.success(f"Đã lưu thành công {count} mục!")
+                        bible_saved = st.session_state.get('extract_bible_saved', False)
+
+                        if not bible_saved:
+                            st.caption("**Bước 1:** Xác nhận Bible để lưu, sau đó hệ thống sẽ gợi ý Relation.")
+                            c_save, c_cancel = st.columns([1, 1])
+                            with c_save:
+                                if st.button("✅ Xác nhận Bible", type="primary", use_container_width=True, key="extract_confirm_bible"):
+                                    uid = getattr(st.session_state.get("user"), "id", None) or ""
+                                    uem = getattr(st.session_state.get("user"), "email", None) or ""
+                                    if not check_permission(uid, uem, project_id, "write"):
+                                        st.warning("Chỉ Owner mới được lưu Bible.")
+                                    else:
+                                        count = 0
+                                        prog = st.progress(0)
+                                        total = len(unique_items)
+                                        _chap_num = st.session_state.get('extract_chapter_num', 0)
+                                        for idx, item in enumerate(unique_items):
+                                            desc = item.get('description', '')
+                                            raw_name = item.get('entity_name', 'Unknown')
+                                            raw_type_str = item.get('type', 'Khác').strip()
+                                            prefix_key = Config.map_extract_type_to_prefix(raw_type_str, desc)
+                                            final_name = f"[{prefix_key}] {raw_name}" if not raw_name.startswith("[") else raw_name
+                                            if desc:
+                                                vec = AIService.get_embedding(desc)
+                                                if vec:
+                                                    supabase.table("story_bible").insert({
+                                                        "story_id": project_id,
+                                                        "entity_name": final_name,
+                                                        "description": desc,
+                                                        "embedding": vec,
+                                                        "source_chapter": _chap_num,
+                                                    }).execute()
+                                                    count += 1
+                                            prog.progress(int((idx + 1) / total * 100))
+                                        st.session_state['extract_bible_saved'] = True
+                                        st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                                        # (2) Chạy suggest_relations để gợi ý quan hệ
+                                        extract_content = st.session_state.get('extract_content', '')
+                                        if extract_content:
+                                            try:
+                                                rels = suggest_relations(extract_content.strip(), project_id)
+                                                st.session_state['temp_relation_suggestions'] = rels or []
+                                            except Exception:
+                                                st.session_state['temp_relation_suggestions'] = []
+                                        else:
+                                            st.session_state['temp_relation_suggestions'] = []
+                                        st.success(f"Đã lưu {count} mục Bible! Tiếp theo: xác nhận Relation bên dưới.")
+                                        st.rerun()
+                            with c_cancel:
+                                if st.button("Hủy bỏ / Làm lại", use_container_width=True, key="extract_cancel2"):
+                                    st.session_state['extract_bible_mode'] = False
+                                    st.session_state['temp_extracted_data'] = None
+                                    st.session_state.pop('extract_chapter_num', None)
+                                    st.session_state.pop('extract_content', None)
+                                    st.session_state.pop('extract_bible_saved', None)
+                                    st.session_state.pop('temp_relation_suggestions', None)
+                                    st.rerun()
+                        else:
+                            # Bước 2: Xác nhận Relation
+                            rel_pending = st.session_state.get('temp_relation_suggestions') or []
+                            try:
+                                from utils.cache_helpers import get_bible_list_cached
+                                bible_entries = get_bible_list_cached(project_id, st.session_state.get("update_trigger", 0))
+                                id_to_name = {e["id"]: e.get("entity_name", "") for e in bible_entries}
+                            except Exception:
+                                id_to_name = {}
+                            if rel_pending:
+                                st.caption("**Bước 2:** Xác nhận quan hệ giữa các thực thể, sau đó bấm Hoàn tất.")
+                                for i, item in enumerate(rel_pending):
+                                    if item.get("kind") == "relation":
+                                        src_name = id_to_name.get(item.get("source_entity_id"), str(item.get("source_entity_id", "")))
+                                        tgt_name = id_to_name.get(item.get("target_entity_id"), str(item.get("target_entity_id", "")))
+                                        with st.container():
+                                            st.markdown(
+                                                f"**{src_name}** — *{item.get('relation_type', '')}* — **{tgt_name}**  \n"
+                                                f"_{item.get('description', '')}_"
+                                            )
+                                            c1, c2 = st.columns(2)
+                                            with c1:
+                                                if st.button("✅ Xác nhận", key=f"ext_rel_confirm_{i}"):
+                                                    uid = getattr(st.session_state.get("user"), "id", None) or ""
+                                                    uem = getattr(st.session_state.get("user"), "email", None) or ""
+                                                    if check_permission(uid, uem, project_id, "write"):
+                                                        try:
+                                                            supabase.table("entity_relations").insert({
+                                                                "source_entity_id": item["source_entity_id"],
+                                                                "target_entity_id": item["target_entity_id"],
+                                                                "relation_type": item.get("relation_type", "liên quan"),
+                                                                "description": item.get("description", "") or "",
+                                                                "story_id": project_id,
+                                                            }).execute()
+                                                            rel_pending.pop(i)
+                                                            st.session_state['temp_relation_suggestions'] = rel_pending
+                                                            st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                                                            st.rerun()
+                                                        except Exception as ex:
+                                                            st.error(f"Lỗi: {ex}")
+                                            with c2:
+                                                if st.button("❌ Hủy", key=f"ext_rel_reject_{i}"):
+                                                    rel_pending.pop(i)
+                                                    st.session_state['temp_relation_suggestions'] = rel_pending
+                                                    st.rerun()
+                                            st.markdown("---")
+                                    else:
+                                        ent_name = id_to_name.get(item.get("entity_id"), str(item.get("entity_id", "")))
+                                        par_name = id_to_name.get(item.get("parent_entity_id"), str(item.get("parent_entity_id", "")))
+                                        with st.container():
+                                            st.markdown(
+                                                f"**Đặt parent (1-n):** *{ent_name}* → gốc **{par_name}**  \n"
+                                                f"_{item.get('reason', '')}_"
+                                            )
+                                            c1, c2 = st.columns(2)
+                                            with c1:
+                                                if st.button("✅ Xác nhận", key=f"ext_parent_confirm_{i}"):
+                                                    uid = getattr(st.session_state.get("user"), "id", None) or ""
+                                                    uem = getattr(st.session_state.get("user"), "email", None) or ""
+                                                    if check_permission(uid, uem, project_id, "write"):
+                                                        try:
+                                                            supabase.table("story_bible").update({"parent_id": item["parent_entity_id"]}).eq("id", item["entity_id"]).execute()
+                                                            rel_pending.pop(i)
+                                                            st.session_state['temp_relation_suggestions'] = rel_pending
+                                                            st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                                                            st.rerun()
+                                                        except Exception as ex:
+                                                            st.error(f"Lỗi: {ex}")
+                                            with c2:
+                                                if st.button("❌ Hủy", key=f"ext_parent_reject_{i}"):
+                                                    rel_pending.pop(i)
+                                                    st.session_state['temp_relation_suggestions'] = rel_pending
+                                                    st.rerun()
+                                            st.markdown("---")
+                            if not rel_pending:
+                                st.info("Không có đề xuất quan hệ nào, hoặc bạn đã xác nhận/hủy hết.")
+                            if st.button("✅ Hoàn tất Extract", type="primary", key="extract_finish"):
                                 st.session_state['extract_bible_mode'] = False
                                 st.session_state['temp_extracted_data'] = None
+                                st.session_state.pop('extract_chapter_num', None)
+                                st.session_state.pop('extract_content', None)
+                                st.session_state.pop('extract_bible_saved', None)
+                                st.session_state.pop('temp_relation_suggestions', None)
                                 st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
-                                time.sleep(1.5)
-                                st.rerun()
-                        with c_cancel:
-                            if st.button("Hủy bỏ / Làm lại", use_container_width=True, key="extract_cancel2"):
-                                st.session_state['extract_bible_mode'] = False
-                                st.session_state['temp_extracted_data'] = None
-                                st.rerun()
+                                invalidate_cache_and_rerun()
+        else:
+            st.warning("⚠️ Chương hiện tại chưa có nội dung. Nhập nội dung và bấm Save trước khi Extract.")
+            if st.button("Đóng Extract", key="extract_close_empty"):
+                st.session_state['extract_bible_mode'] = False
+                st.rerun()

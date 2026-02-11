@@ -5,7 +5,7 @@ import streamlit as st
 
 @st.cache_data(ttl=300)
 def get_chapters_cached(project_id: str, update_trigger: int = 0):
-    """Danh sách chapter (chapter_number, title) cho project. update_trigger thay đổi -> cache miss."""
+    """Danh sách chapter đầy đủ cho project. update_trigger thay đổi -> cache miss."""
     if not project_id:
         return []
     try:
@@ -16,7 +16,7 @@ def get_chapters_cached(project_id: str, update_trigger: int = 0):
         r = (
             services["supabase"]
             .table("chapters")
-            .select("chapter_number, title")
+            .select("*")
             .eq("story_id", project_id)
             .order("chapter_number")
             .execute()
