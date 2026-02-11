@@ -70,8 +70,14 @@ def render_dashboard_tab(project_id):
                 st.warning("Vui lòng tick xác nhận trước khi xóa toàn bộ chat.")
             else:
                 try:
-                    supabase.table("chat_history").delete().eq("story_id", project_id).execute()
-                    st.success("✅ Đã xóa TOÀN BỘ lịch sử chat của dự án hiện tại.")
+                    # Xóa lịch sử chat RIÊNG của user hiện tại (không đụng chat của người khác)
+                    user = st.session_state.get("user")
+                    user_id = getattr(user, "id", None) if user else None
+                    q = supabase.table("chat_history").delete().eq("story_id", project_id)
+                    if user_id:
+                        q = q.eq("user_id", str(user_id))
+                    q.execute()
+                    st.success("✅ Đã xóa lịch sử chat của bạn trong dự án hiện tại.")
                     # Clear cache + tăng update_trigger để Dashboard và các tab khác reload dữ liệu mới
                     st.cache_data.clear()
                     st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1

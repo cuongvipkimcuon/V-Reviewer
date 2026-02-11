@@ -10,6 +10,7 @@ from ai_engine import (
     RuleMiningSystem,
 )
 from persona import PersonaSystem
+from utils.auth_manager import check_permission, submit_pending_change
 
 
 def render_chat_tab(project_id, persona):
@@ -17,6 +18,21 @@ def render_chat_tab(project_id, persona):
     st.header("💬 Smart AI Chat")
 
     col_chat, col_memory = st.columns([3, 1])
+
+    # Thông tin user & quyền: dùng cho Rule Mining, Crystallize, quyền ghi/chờ duyệt
+    user = st.session_state.get("user")
+    user_id = getattr(user, "id", None) if user else None
+    user_email = getattr(user, "email", None) if user else None
+    can_write = bool(
+        project_id
+        and user_id
+        and check_permission(str(user_id), user_email or "", project_id, "write")
+    )
+    can_request = bool(
+        project_id
+        and user_id
+        and check_permission(str(user_id), user_email or "", project_id, "request_write")
+    )
 
     with col_memory:
         st.write("### 🧠 Memory & Settings")
@@ -74,46 +90,90 @@ def render_chat_tab(project_id, persona):
             memory_topic = st.text_input("Topic:", placeholder="e.g., Magic System")
 
             if st.button("✨ Crystallize"):
-                services = init_services()
-                supabase = services['supabase']
+                try:
+                    services = init_services()
+                    supabase = services["supabase"]
 
-                limit = 20 if crys_option == "Last 20 messages" else 100
-                chat_data = supabase.table("chat_history") \
-                    .select("*") \
-                    .eq("story_id", project_id) \
-                    .order("created_at", desc=True) \
-                    .limit(limit) \
-                    .execute()
+                    limit = 20 if crys_option == "Last 20 messages" else 100
+                    q = (
+                        supabase.table("chat_history")
+                        .select("*")
+                        .eq("story_id", project_id)
+                    )
+                    # Chat riêng tư: chỉ lấy lịch sử của chính user hiện tại
+                    if user_id:
+                        q = q.eq("user_id", str(user_id))
+                    chat_data = (
+                        q.order("created_at", desc=True)
+                        .limit(limit)
+                        .execute()
+                    )
 
-                if chat_data.data:
-                    chat_data.data.reverse()
-                    with st.spinner("Summarizing..."):
-                        summary = RuleMiningSystem.crystallize_session(chat_data.data, active_persona['role'])
-                        if summary != "NO_INFO":
-                            st.session_state['chat_crystallized_summary'] = summary
-                            st.session_state['chat_crystallized_topic'] = memory_topic if memory_topic else f"Chat {datetime.now().strftime('%d/%m')}"
-                            st.success("Summary ready!")
-                        else:
-                            st.warning("No valuable information found.")
+                    if chat_data.data:
+                        chat_data.data.reverse()
+                        with st.spinner("Summarizing..."):
+                            summary = RuleMiningSystem.crystallize_session(
+                                chat_data.data, active_persona["role"]
+                            )
+                            if summary != "NO_INFO":
+                                st.session_state["chat_crystallized_summary"] = summary
+                                st.session_state["chat_crystallized_topic"] = (
+                                    memory_topic
+                                    if memory_topic
+                                    else f"Chat {datetime.now().strftime('%d/%m')}"
+                                )
+                                st.success("Summary ready!")
+                            else:
+                                st.warning("No valuable information found.")
+                    else:
+                        st.info("Không có lịch sử chat nào để Crystallize cho user hiện tại.")
+                except Exception as e:
+                    st.error(f"Lỗi khi Crystallize: {e}")
 
-        if 'chat_crystallized_summary' in st.session_state:
-            final_sum = st.text_area("Edit summary:", value=st.session_state['chat_crystallized_summary'])
+        if "chat_crystallized_summary" in st.session_state:
+            final_sum = st.text_area(
+                "Edit summary:", value=st.session_state["chat_crystallized_summary"]
+            )
             if st.button("💾 Save to Memory"):
                 vec = AIService.get_embedding(final_sum)
                 if vec:
-                    services = init_services()
-                    supabase = services['supabase']
+                    try:
+                        services = init_services()
+                        supabase = services["supabase"]
+                        payload = {
+                            "entity_name": f"[CHAT] {st.session_state['chat_crystallized_topic']}",
+                            "description": final_sum,
+                            "embedding": vec,
+                            "source_chapter": 0,
+                        }
+                        if can_write:
+                            payload["story_id"] = project_id
+                            supabase.table("story_bible").insert(payload).execute()
+                            st.toast("Saved to memory!")
+                        elif can_request:
+                            pid = submit_pending_change(
+                                story_id=project_id,
+                                requested_by_email=user_email or "",
+                                table_name="story_bible",
+                                target_key={},
+                                old_data={},
+                                new_data=payload,
+                            )
+                            if pid:
+                                st.toast(
+                                    "Đã gửi yêu cầu lưu CHAT vào Bible cho Owner duyệt.",
+                                    icon="📤",
+                                )
+                            else:
+                                st.error(
+                                    "Không gửi được yêu cầu (kiểm tra bảng pending_changes)."
+                                )
+                        else:
+                            st.warning("Bạn không có quyền lưu hoặc gửi yêu cầu.")
+                    except Exception as e:
+                        st.error(f"Lỗi khi lưu Memory: {e}")
 
-                    supabase.table("story_bible").insert({
-                        "story_id": project_id,
-                        "entity_name": f"[CHAT] {st.session_state['chat_crystallized_topic']}",
-                        "description": final_sum,
-                        "embedding": vec,
-                        "source_chapter": 0
-                    }).execute()
-
-                    st.toast("Saved to memory!")
-                    del st.session_state['chat_crystallized_summary']
+                    del st.session_state["chat_crystallized_summary"]
                     st.rerun()
 
     @st.fragment
@@ -121,7 +181,19 @@ def render_chat_tab(project_id, persona):
         try:
             services = init_services()
             supabase = services["supabase"]
-            msgs_data = supabase.table("chat_history").select("*").eq("story_id", project_id).order("created_at", desc=True).limit(50).execute()
+            # Chat riêng tư: chỉ lấy lịch sử chat của chính user hiện tại
+            q = (
+                supabase.table("chat_history")
+                .select("*")
+                .eq("story_id", project_id)
+            )
+            if user_id:
+                q = q.eq("user_id", str(user_id))
+            msgs_data = (
+                q.order("created_at", desc=True)
+                .limit(50)
+                .execute()
+            )
             msgs = msgs_data.data[::-1] if msgs_data.data else []
             visible_msgs = [m for m in msgs if m["created_at"] > st.session_state.get("chat_cutoff", "1970-01-01")]
             for m in visible_msgs:
@@ -249,6 +321,7 @@ def render_chat_tab(project_id, persona):
                         supabase.table("chat_history").insert([
                             {
                                 "story_id": project_id,
+                                "user_id": str(user_id) if user_id else None,
                                 "role": "user",
                                 "content": prompt,
                                 "created_at": now_timestamp,
@@ -261,6 +334,7 @@ def render_chat_tab(project_id, persona):
                             },
                             {
                                 "story_id": project_id,
+                                "user_id": str(user_id) if user_id else None,
                                 "role": "model",
                                 "content": full_response_text,
                                 "created_at": now_timestamp,
@@ -272,9 +346,11 @@ def render_chat_tab(project_id, persona):
                             }
                         ]).execute()
 
-                        new_rule = RuleMiningSystem.extract_rule_raw(prompt, full_response_text)
-                        if new_rule:
-                            st.session_state['pending_new_rule'] = new_rule
+                        # Rule mining chỉ bật cho Owner (hoặc user có quyền write)
+                        if can_write:
+                            new_rule = RuleMiningSystem.extract_rule_raw(prompt, full_response_text)
+                            if new_rule:
+                                st.session_state['pending_new_rule'] = new_rule
 
                     elif not st.session_state.get('enable_history', True):
                         st.caption("👻 Anonymous mode: History not saved & Rule mining disabled.")
@@ -285,7 +361,8 @@ def render_chat_tab(project_id, persona):
     with col_chat:
         _chat_messages_fragment()
 
-    if 'pending_new_rule' in st.session_state:
+    # Rule Mining UI chỉ hiển thị nếu user có quyền write (Owner)
+    if 'pending_new_rule' in st.session_state and can_write:
         rule_content = st.session_state['pending_new_rule']
 
         with st.expander("🧐 AI discovered a new Rule!", expanded=True):
@@ -314,15 +391,35 @@ def render_chat_tab(project_id, persona):
                 services = init_services()
                 supabase = services['supabase']
 
-                supabase.table("story_bible").insert({
-                    "story_id": project_id,
+                payload = {
                     "entity_name": f"[RULE] {datetime.now().strftime('%Y%m%d_%H%M%S')}",
                     "description": final_content,
                     "embedding": vec,
-                    "source_chapter": 0
-                }).execute()
+                    "source_chapter": 0,
+                }
+                try:
+                    if can_write:
+                        payload["story_id"] = project_id
+                        supabase.table("story_bible").insert(payload).execute()
+                        st.toast("Learned new rule!")
+                    elif can_request:
+                        pid = submit_pending_change(
+                            story_id=project_id,
+                            requested_by_email=user_email or "",
+                            table_name="story_bible",
+                            target_key={},
+                            old_data={},
+                            new_data=payload,
+                        )
+                        if pid:
+                            st.toast("Đã gửi yêu cầu thêm RULE cho Owner duyệt.", icon="📤")
+                        else:
+                            st.error("Không gửi được yêu cầu (kiểm tra bảng pending_changes).")
+                    else:
+                        st.warning("Bạn không có quyền lưu hoặc gửi yêu cầu Rule.")
+                except Exception as e:
+                    st.error(f"Lỗi khi lưu RULE: {e}")
 
-                st.toast("Learned new rule!")
                 del st.session_state['pending_new_rule']
                 del st.session_state['rule_analysis']
                 st.rerun()
@@ -335,7 +432,7 @@ def render_chat_tab(project_id, persona):
                 del st.session_state['rule_analysis']
                 st.rerun()
 
-        if 'edit_rule_manual' in st.session_state:
+        if 'edit_rule_manual' in st.session_state and can_write:
             edited = st.text_input("Edit rule:", value=st.session_state['edit_rule_manual'])
             if st.button("Save edited version"):
                 vec = AIService.get_embedding(edited)

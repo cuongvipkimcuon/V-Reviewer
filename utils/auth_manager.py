@@ -1,5 +1,6 @@
 # utils/auth_manager.py - Kiểm tra quyền theo project_members
 from typing import List, Optional, Dict, Any
+import json
 
 # Owner: Read, Write, Delete, Approve
 # Partner: Read, Request Write (gửi pending_changes), không Delete/Approve
@@ -127,19 +128,21 @@ def submit_pending_change(
         return None
     try:
         supabase = services["supabase"]
-        r = supabase.table("pending_changes").insert({
+        payload = {
             "story_id": story_id,
             "requested_by_email": requested_by_email,
             "table_name": table_name,
-            "target_key": target_key,
-            "old_data": old_data,
-            "new_data": new_data,
+            # Đảm bảo JSONB hợp lệ, tránh lỗi serialization
+            "target_key": json.loads(json.dumps(target_key or {}, default=str)),
+            "old_data": json.loads(json.dumps(old_data or {}, default=str)),
+            "new_data": json.loads(json.dumps(new_data or {}, default=str)),
             "status": "pending",
-        }).execute()
+        }
+        r = supabase.table("pending_changes").insert(payload).execute()
         if r.data and len(r.data) > 0:
             return r.data[0].get("id")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"submit_pending_change error: {e}")
     return None
 
 
