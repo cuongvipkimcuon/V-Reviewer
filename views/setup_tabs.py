@@ -22,6 +22,7 @@ def render_prefix_setup():
         st.warning(f"Bảng bible_prefix_config chưa tồn tại hoặc lỗi: {e}. Chạy schema_prefix_persona.sql trong Supabase.")
         return
     for row in rows:
+        prefix_key = (row.get("prefix_key") or "").strip().upper()
         with st.expander(f"[{row.get('prefix_key', '')}] {row.get('description', '')[:50]}..."):
             st.text_input("Prefix key", value=row.get("prefix_key", ""), key=f"pk_{row.get('id')}", disabled=True)
             st.text_area("Mô tả", value=row.get("description", ""), key=f"desc_{row.get('id')}", height=80)
@@ -45,13 +46,17 @@ def render_prefix_setup():
                     except Exception as ex:
                         st.error(str(ex))
             with col_del:
-                if st.button("🗑️ Xóa tiền tố này", key=f"del_{row.get('id')}"):
-                    try:
-                        supabase.table("bible_prefix_config").delete().eq("id", row["id"]).execute()
-                        st.success("Đã xóa tiền tố.")
-                        invalidate_cache_and_rerun()
-                    except Exception as ex:
-                        st.error(str(ex))
+                # Không cho phép xóa hai tiền tố hệ thống: RULE và CHAT
+                if prefix_key in ("RULE", "CHAT"):
+                    st.info("Tiền tố hệ thống (RULE/CHAT) không thể xóa.")
+                else:
+                    if st.button("🗑️ Xóa tiền tố này", key=f"del_{row.get('id')}"):
+                        try:
+                            supabase.table("bible_prefix_config").delete().eq("id", row["id"]).execute()
+                            st.success("Đã xóa tiền tố.")
+                            invalidate_cache_and_rerun()
+                        except Exception as ex:
+                            st.error(str(ex))
     st.markdown("---")
     st.subheader("Thêm tiền tố mới")
     with st.form("add_prefix"):
