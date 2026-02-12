@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime
 
 import streamlit as st
@@ -8,9 +9,84 @@ from ai_engine import (
     ContextManager,
     SmartAIRouter,
     RuleMiningSystem,
+    HybridSearch,
+    check_semantic_intent,
 )
 from persona import PersonaSystem
 from utils.auth_manager import check_permission, submit_pending_change
+from utils.python_executor import PythonExecutor
+
+
+def _auto_crystallize_background(project_id, user_id, persona_role):
+    """Chạy ngầm: crystallize 25 tin (30 - 5) và lưu vào Bible [CHAT] (ngày-stt)."""
+    try:
+        services = init_services()
+        if not services:
+            return
+        supabase = services["supabase"]
+        q = supabase.table("chat_history").select("id, role, content, created_at").eq("story_id", project_id)
+        if user_id:
+            q = q.eq("user_id", str(user_id))
+        r = q.order("created_at", desc=True).limit(35).execute()
+        data = list(r.data)[::-1] if r.data else []
+        if len(data) < 25:
+            return
+        to_crystallize = data[:-5]
+        chat_text = "\n".join([f"{m['role']}: {m['content']}" for m in to_crystallize])
+        summary = RuleMiningSystem.crystallize_session(to_crystallize, persona_role)
+        if not summary or summary == "NO_INFO":
+            return
+        vec = AIService.get_embedding(summary)
+        if not vec:
+            return
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        try:
+            log_r = supabase.table("chat_crystallize_log").select("serial_in_day").eq(
+                "story_id", project_id
+            ).eq("user_id", str(user_id) or "").eq("crystallize_date", today).execute()
+            serial = len(log_r.data) + 1 if log_r.data else 1
+        except Exception:
+            serial = 1
+        entity_name = f"[CHAT] {today} chat-{serial}"
+        payload = {
+            "story_id": project_id,
+            "entity_name": entity_name,
+            "description": summary,
+            "embedding": vec,
+            "source_chapter": 0,
+        }
+        ins = supabase.table("story_bible").insert(payload).execute()
+        bible_id = ins.data[0].get("id") if ins.data else None
+        try:
+            supabase.table("chat_crystallize_log").insert({
+                "story_id": project_id,
+                "user_id": str(user_id) if user_id else None,
+                "crystallize_date": today,
+                "serial_in_day": serial,
+                "message_count": len(to_crystallize),
+                "bible_entry_id": bible_id,
+            }).execute()
+        except Exception:
+            pass
+        try:
+            from ai_engine import suggest_relations
+            suggestions = suggest_relations(summary, project_id)
+            for s in (suggestions or []):
+                if s.get("kind") == "relation":
+                    try:
+                        supabase.table("entity_relations").insert({
+                            "source_entity_id": s["source_entity_id"],
+                            "target_entity_id": s["target_entity_id"],
+                            "relation_type": s.get("relation_type", "liên quan"),
+                            "description": s.get("description", ""),
+                            "story_id": project_id,
+                        }).execute()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"auto_crystallize_background error: {e}")
 
 
 def render_chat_tab(project_id, persona):
@@ -84,97 +160,7 @@ def render_chat_tab(project_id, persona):
             key="chat_history_depth",
         )
 
-        with st.expander("💎 Crystallize Chat"):
-            st.caption("Save key points to Bible.")
-            crys_option = st.radio("Scope:", ["Last 20 messages", "Entire session"])
-            memory_topic = st.text_input("Topic:", placeholder="e.g., Magic System")
-
-            if st.button("✨ Crystallize"):
-                try:
-                    services = init_services()
-                    supabase = services["supabase"]
-
-                    limit = 20 if crys_option == "Last 20 messages" else 100
-                    q = (
-                        supabase.table("chat_history")
-                        .select("*")
-                        .eq("story_id", project_id)
-                    )
-                    # Chat riêng tư: chỉ lấy lịch sử của chính user hiện tại
-                    if user_id:
-                        q = q.eq("user_id", str(user_id))
-                    chat_data = (
-                        q.order("created_at", desc=True)
-                        .limit(limit)
-                        .execute()
-                    )
-
-                    if chat_data.data:
-                        chat_data.data.reverse()
-                        with st.spinner("Summarizing..."):
-                            summary = RuleMiningSystem.crystallize_session(
-                                chat_data.data, active_persona["role"]
-                            )
-                            if summary != "NO_INFO":
-                                st.session_state["chat_crystallized_summary"] = summary
-                                st.session_state["chat_crystallized_topic"] = (
-                                    memory_topic
-                                    if memory_topic
-                                    else f"Chat {datetime.now().strftime('%d/%m')}"
-                                )
-                                st.success("Summary ready!")
-                            else:
-                                st.warning("No valuable information found.")
-                    else:
-                        st.info("Không có lịch sử chat nào để Crystallize cho user hiện tại.")
-                except Exception as e:
-                    st.error(f"Lỗi khi Crystallize: {e}")
-
-        if "chat_crystallized_summary" in st.session_state:
-            final_sum = st.text_area(
-                "Edit summary:", value=st.session_state["chat_crystallized_summary"]
-            )
-            if st.button("💾 Save to Memory"):
-                vec = AIService.get_embedding(final_sum)
-                if vec:
-                    try:
-                        services = init_services()
-                        supabase = services["supabase"]
-                        payload = {
-                            "entity_name": f"[CHAT] {st.session_state['chat_crystallized_topic']}",
-                            "description": final_sum,
-                            "embedding": vec,
-                            "source_chapter": 0,
-                        }
-                        if can_write:
-                            payload["story_id"] = project_id
-                            supabase.table("story_bible").insert(payload).execute()
-                            st.toast("Saved to memory!")
-                        elif can_request:
-                            pid = submit_pending_change(
-                                story_id=project_id,
-                                requested_by_email=user_email or "",
-                                table_name="story_bible",
-                                target_key={},
-                                old_data={},
-                                new_data=payload,
-                            )
-                            if pid:
-                                st.toast(
-                                    "Đã gửi yêu cầu lưu CHAT vào Bible cho Owner duyệt.",
-                                    icon="📤",
-                                )
-                            else:
-                                st.error(
-                                    "Không gửi được yêu cầu (kiểm tra bảng pending_changes)."
-                                )
-                        else:
-                            st.warning("Bạn không có quyền lưu hoặc gửi yêu cầu.")
-                    except Exception as e:
-                        st.error(f"Lỗi khi lưu Memory: {e}")
-
-                    del st.session_state["chat_crystallized_summary"]
-                    st.rerun()
+        st.caption("💎 Auto Crystallize: Mỗi 30 tin nhắn, hệ thống tự tóm tắt & lưu Bible [CHAT] (ngày-stt).")
 
     @st.fragment
     def _chat_messages_fragment():
@@ -221,7 +207,24 @@ def render_chat_tab(project_id, persona):
                         for m in visible_msgs[-5:]
                     ])
 
-                router_out = SmartAIRouter.ai_router_pro_v2(prompt, recent_history_text, project_id)
+                # Semantic Intent: nếu khớp >= ngưỡng thì dùng data trực tiếp (không cần intent)
+                semantic_match = None
+                try:
+                    svc = init_services()
+                    if svc:
+                        r = svc["supabase"].table("settings").select("value").eq("key", "semantic_intent_no_use").execute()
+                        no_use = r.data and r.data[0] and int(r.data[0].get("value", 0)) == 1
+                        if not no_use:
+                            semantic_match = check_semantic_intent(prompt, project_id)
+                except Exception:
+                    semantic_match = check_semantic_intent(prompt, project_id)
+                if semantic_match:
+                    router_out = {"intent": "chat_casual", "target_files": [], "target_bible_entities": [], "rewritten_query": prompt, "chapter_range": None, "chapter_range_mode": None, "chapter_range_count": 5}
+                    if semantic_match.get("related_data"):
+                        router_out["_semantic_data"] = semantic_match["related_data"]
+                    debug_notes.append(f"🎯 Semantic match {int(semantic_match.get('similarity',0)*100)}%")
+                else:
+                    router_out = SmartAIRouter.ai_router_pro_v2(prompt, recent_history_text, project_id)
                 intent = router_out.get('intent', 'chat_casual')
                 targets = router_out.get('target_files', [])
                 rewritten_query = router_out.get('rewritten_query', prompt)
@@ -230,12 +233,55 @@ def render_chat_tab(project_id, persona):
                 if st.session_state.get('router_ignore_history'):
                     debug_notes.append("⚡️ Router: Ignored History")
 
-                context_text, sources, context_tokens = ContextManager.build_context(
-                    router_out,
-                    project_id,
-                    active_persona,
-                    st.session_state.get('strict_mode', False)
-                )
+                exec_result = None
+                if intent == "numerical_calculation":
+                    context_text, sources, context_tokens = ContextManager.build_context(
+                        router_out, project_id, active_persona,
+                        st.session_state.get('strict_mode', False),
+                        current_arc_id=st.session_state.get('current_arc_id'),
+                        session_state=dict(st.session_state),
+                    )
+                    code_prompt = f"""User hỏi: "{prompt}"
+Context có sẵn:
+{context_text[:6000]}
+
+Nhiệm vụ: Tạo code Python (pandas/numpy) để trả lời. Gán kết quả cuối vào biến result.
+Chỉ trả về code trong block ```python ... ```, không giải thích."""
+                    try:
+                        code_resp = AIService.call_openrouter(
+                            messages=[{"role": "user", "content": code_prompt}],
+                            model=st.session_state.get('selected_model', Config.DEFAULT_MODEL),
+                            temperature=0.1,
+                            max_tokens=2000,
+                        )
+                        raw = (code_resp.choices[0].message.content or "").strip()
+                        import re
+                        m = re.search(r'```(?:python)?\s*(.*?)```', raw, re.DOTALL)
+                        code = m.group(1).strip() if m else raw
+                        if code:
+                            val, err = PythonExecutor.execute(code, result_variable="result")
+                            if err:
+                                exec_result = f"(Executor lỗi: {err})"
+                            else:
+                                exec_result = str(val) if val is not None else "null"
+                                debug_notes.append("🧮 Python Executor OK")
+                    except Exception as ex:
+                        exec_result = f"(Lỗi: {ex})"
+                    if exec_result:
+                        context_text += f"\n\n--- KẾT QUẢ TÍNH TOÁN (Python Executor) ---\n{exec_result}"
+
+                if exec_result is None:
+                    context_text, sources, context_tokens = ContextManager.build_context(
+                        router_out,
+                        project_id,
+                        active_persona,
+                        st.session_state.get('strict_mode', False),
+                        current_arc_id=st.session_state.get('current_arc_id'),
+                        session_state=dict(st.session_state),
+                    )
+                    if router_out.get("_semantic_data"):
+                        context_text = f"[SEMANTIC INTENT - Data]\n{router_out['_semantic_data']}\n\n{context_text}"
+                        sources.append("🎯 Semantic Intent")
 
                 debug_notes.extend(sources)
 
@@ -346,11 +392,35 @@ def render_chat_tab(project_id, persona):
                             }
                         ]).execute()
 
-                        # Rule mining chỉ bật cho Owner (hoặc user có quyền write)
+                        # Auto crystallize mỗi 30 tin (chạy ngầm)
+                        if can_write and user_id:
+                            try:
+                                count_r = supabase.table("chat_history").select("id", count="exact").eq(
+                                    "story_id", project_id
+                                ).eq("user_id", str(user_id)).execute()
+                                total = getattr(count_r, "count", 0) or len(count_r.data or [])
+                                if total >= 30 and total % 30 == 0:
+                                    threading.Thread(
+                                        target=_auto_crystallize_background,
+                                        args=(project_id, user_id, active_persona["role"]),
+                                        daemon=True,
+                                    ).start()
+                            except Exception:
+                                pass
+
+                        # Rule mining
                         if can_write:
                             new_rule = RuleMiningSystem.extract_rule_raw(prompt, full_response_text)
                             if new_rule:
                                 st.session_state['pending_new_rule'] = new_rule
+                            # Offer add to Semantic Intent (nếu bật auto-create và không phải chat phiếm)
+                            try:
+                                r = init_services()["supabase"].table("settings").select("value").eq("key", "semantic_intent_no_auto_create").execute()
+                                no_auto = r.data and r.data[0] and int(r.data[0].get("value", 0)) == 1
+                            except Exception:
+                                no_auto = False
+                            if not no_auto and intent != "chat_casual":
+                                st.session_state["pending_semantic_add"] = {"prompt": prompt, "response": full_response_text, "context": context_text, "intent": intent}
 
                     elif not st.session_state.get('enable_history', True):
                         st.caption("👻 Anonymous mode: History not saved & Rule mining disabled.")
@@ -361,7 +431,45 @@ def render_chat_tab(project_id, persona):
     with col_chat:
         _chat_messages_fragment()
 
-    # Rule Mining UI chỉ hiển thị nếu user có quyền write (Owner)
+    # Offer add to Semantic Intent
+    if "pending_semantic_add" in st.session_state and can_write:
+        p = st.session_state["pending_semantic_add"]
+        with st.expander("🎯 Thêm vào Semantic Intent?", expanded=True):
+            st.caption("Câu hỏi vừa rồi không phải chat phiếm. Thêm làm mẫu để lần sau khớp nhanh?")
+            st.write("**Câu hỏi:**", p.get("prompt", "")[:100])
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if st.button("✅ Thêm vào Semantic"):
+                    def _add_semantic():
+                        try:
+                            svc = init_services()
+                            if not svc:
+                                return
+                            sb = svc["supabase"]
+                            vec = AIService.get_embedding(p.get("prompt", ""))
+                            ctx = p.get("context", "") or ""
+                            resp = p.get("response", "") or ""
+                            related_data = (ctx.rstrip() + "\n\n--- Câu trả lời ---\n" + resp) if ctx else resp
+                            payload = {"story_id": project_id, "question_sample": p.get("prompt", ""), "intent": "chat_casual", "related_data": related_data}
+                            if vec:
+                                payload["embedding"] = vec
+                            try:
+                                sb.table("semantic_intent").insert(payload).execute()
+                            except Exception:
+                                payload.pop("embedding", None)
+                                sb.table("semantic_intent").insert(payload).execute()
+                        except Exception:
+                            pass
+                    threading.Thread(target=_add_semantic, daemon=True).start()
+                    del st.session_state["pending_semantic_add"]
+                    st.toast("Đã thêm vào Semantic Intent (chạy ngầm).")
+                    st.rerun()
+            with col_b:
+                if st.button("❌ Bỏ qua"):
+                    del st.session_state["pending_semantic_add"]
+                    st.rerun()
+
+    # Rule Mining UI
     if 'pending_new_rule' in st.session_state and can_write:
         rule_content = st.session_state['pending_new_rule']
 

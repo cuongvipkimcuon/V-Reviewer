@@ -9,6 +9,13 @@ from openai import OpenAI
 
 from config import Config, init_services
 
+try:
+    from core.arc_service import ArcService
+    from core.reverse_lookup import ReverseLookupAssembler
+except ImportError:
+    ArcService = None
+    ReverseLookupAssembler = None
+
 
 # ==========================================
 # 🤖 AI SERVICE
@@ -339,6 +346,108 @@ class HybridSearch:
 
 
 # ==========================================
+# 🎯 SEMANTIC INTENT (trước Router - khớp thì bỏ qua Router)
+# ==========================================
+def check_semantic_intent(
+    query_text: str,
+    project_id: str,
+    threshold: float = 0.90,
+) -> Optional[Dict]:
+    """So sánh vector câu hỏi với semantic_intent. Nếu khớp >= threshold thì trả về row (related_data chính), else None. Không cần intent."""
+    if not query_text or not project_id:
+        return None
+    try:
+        services = init_services()
+        if not services:
+            return None
+        supabase = services["supabase"]
+        try:
+            supabase.table("semantic_intent").select("id").limit(1).execute()
+        except Exception:
+            return None
+        try:
+            r = supabase.table("settings").select("value").eq("key", "semantic_intent_threshold").execute()
+            if r.data and r.data[0]:
+                t = r.data[0].get("value")
+                threshold = max(0.85, min(1.0, float(t) / 100.0)) if t is not None else threshold
+        except Exception:
+            pass
+        query_vec = AIService.get_embedding(query_text)
+        if not query_vec:
+            return None
+        rows = supabase.table("semantic_intent").select("id, question_sample, intent, related_data, embedding").eq("story_id", project_id).execute()
+        data = rows.data or []
+        best_match = None
+        best_sim = 0.0
+        for row in data:
+            emb = row.get("embedding")
+            if emb is None:
+                continue
+            if isinstance(emb, str):
+                try:
+                    emb = json.loads(emb)
+                except Exception:
+                    continue
+            try:
+                import math
+                dot = sum(a * b for a, b in zip(query_vec, emb))
+                na = math.sqrt(sum(a * a for a in query_vec))
+                nb = math.sqrt(sum(b * b for b in emb))
+                sim = dot / (na * nb) if na and nb else 0
+                sim = (sim + 1) / 2
+                if sim >= threshold and sim > best_sim:
+                    best_sim = sim
+                    best_match = {**row, "similarity": sim}
+            except Exception:
+                pass
+        return best_match
+    except Exception as e:
+        print(f"check_semantic_intent error: {e}")
+        return None
+
+
+# ==========================================
+# 📦 CHUNK SEARCH (vector + text, reverse lookup)
+# ==========================================
+def search_chunks_vector(
+    query_text: str,
+    project_id: str,
+    arc_id: Optional[str] = None,
+    top_k: int = 10,
+) -> List[Dict]:
+    """Tìm chunks theo vector (nếu có embedding) hoặc text fallback. Trả về list chunk rows."""
+    try:
+        services = init_services()
+        if not services:
+            return []
+        supabase = services["supabase"]
+        query_vec = AIService.get_embedding(query_text)
+        q = supabase.table("chunks").select("id, chapter_id, arc_id, content, raw_content, meta_json, story_id").eq("story_id", project_id)
+        if arc_id:
+            q = q.eq("arc_id", arc_id)
+        if query_vec:
+            try:
+                r = supabase.rpc("hybrid_chunk_search", {
+                    "query_text": query_text,
+                    "query_embedding": query_vec,
+                    "story_id_input": project_id,
+                    "match_threshold": 0.3,
+                    "match_count": top_k,
+                }).execute()
+                return list(r.data) if r.data else []
+            except Exception:
+                pass
+        if query_text and query_text.strip():
+            pattern = "%" + str(query_text).strip() + "%"
+            r = q.ilike("content", pattern).limit(top_k).execute()
+            return list(r.data) if r.data else []
+        return []
+    except Exception as e:
+        print(f"search_chunks_vector error: {e}")
+        return []
+
+
+# ==========================================
 # 🧭 SMART AI ROUTER SYSTEM
 # ==========================================
 
@@ -628,10 +737,12 @@ class SmartAIRouter:
         NHIỆM VỤ: Phân tích intent, target files VÀ nhận diện PHẠM VI CHƯƠNG (Chapter Range) nếu user đề cập.
 
         PHÂN LOẠI INTENT:
-        1. "read_full_content": User muốn Sửa, Review, Viết tiếp, Kiểm tra code/văn, hoặc nhắc đến tên file cụ thể -> Cần đọc NGUYÊN VĂN FILE.
-        2. "search_bible": User hỏi thông tin chung, Lore, cốt truyện, quy định, khái niệm, hoặc nhắc tên nhân vật/thực thể có trong danh sách Bible trên -> Tra cứu Bible (search_bible / get_entity_relations).
-        3. "chat_casual": Chào hỏi, khen chê, nói chuyện phiếm không cần dữ liệu dự án.
-        4. "mixed_context": Cần cả nội dung file VÀ kiến thức Bible.
+        1. "numerical_calculation": User hỏi về SỐ LIỆU, tính toán, thống kê (tổng, trung bình, đếm, %, doanh thu, chi phí...) -> Ưu tiên Python Executor với Pandas/NumPy.
+        2. "read_full_content": User muốn Sửa, Review, Viết tiếp, Kiểm tra code/văn, hoặc nhắc đến tên file cụ thể -> Cần đọc NGUYÊN VĂN FILE.
+        3. "search_chunks": User hỏi thông tin chi tiết từ Excel/Word đã chunk, dữ liệu theo dòng/semantic -> Tra chunks (vector + reverse lookup chapter/arc).
+        4. "search_bible": User hỏi thông tin chung, Lore, cốt truyện, quy định, khái niệm, hoặc nhắc tên nhân vật/thực thể có trong danh sách Bible trên -> Tra cứu Bible (search_bible / get_entity_relations).
+        5. "chat_casual": Chào hỏi, khen chê, nói chuyện phiếm không cần dữ liệu dự án.
+        6. "mixed_context": Cần cả nội dung file VÀ kiến thức Bible.
 
         NHẬN DIỆN PHẠM VI CHƯƠNG (chapter_range):
         - Nếu user nói "chương đầu", "mấy chương đầu", "đầu truyện" -> đặt "chapter_range_mode": "first", "chapter_range_count": 5 (hoặc số user nói nếu rõ).
@@ -641,7 +752,7 @@ class SmartAIRouter:
 
         OUTPUT (JSON ONLY):
         {{
-            "intent": "...",
+            "intent": "numerical_calculation" | "read_full_content" | "search_chunks" | "search_bible" | "chat_casual" | "mixed_context",
             "target_files": ["tên file 1", "tên file 2"],
             "target_bible_entities": ["tên thực thể 1", "tên thực thể 2"],
             "reason": "Lý do ngắn gọn bằng tiếng Việt",
@@ -695,10 +806,61 @@ class SmartAIRouter:
 
 
 # ==========================================
-# 📚 CONTEXT MANAGER (V5 - Entity relations, parent_id)
+# 📚 CONTEXT MANAGER (V5 + V6 Arc & Reverse Lookup)
 # ==========================================
 class ContextManager:
-    """Quản lý context cho AI với khả năng kết hợp nhiều nguồn"""
+    """Quản lý context cho AI với khả năng kết hợp nhiều nguồn. V6: Arc scoping + Triangle assembler."""
+
+    @staticmethod
+    def _build_arc_scope_context(project_id: str, current_arc_id: Optional[str], session_state: Optional[Dict] = None) -> Tuple[str, int]:
+        """
+        V6 MODULE 1 & 3: Build [Past Arc Summaries] + [Current Arc] for Sequential/Standalone.
+        Global Bible is still injected via get_mandatory_rules and search_bible below.
+        Returns (text, estimated_tokens).
+        """
+        if not ArcService or not current_arc_id:
+            return "", 0
+        arc = ArcService.get_arc(current_arc_id)
+        if not arc:
+            return "", 0
+        parts = []
+        scope = ArcService.get_scope_for_search(project_id, current_arc_id)
+        if scope.get("scope_type") == ArcService.ARC_TYPE_SEQUENTIAL and scope.get("arc_summaries"):
+            parts.append("[PAST ARC SUMMARIES - Timeline Inheritance]")
+            for a in scope["arc_summaries"]:
+                parts.append("- ARC: %s\n  Summary: %s" % (a.get("name", ""), (a.get("summary") or "").strip() or "(none)"))
+            parts.append("")
+        parts.append("[MACRO CONTEXT - ARC: %s]" % (arc.get("name") or "Current"))
+        parts.append("Summary: %s" % ((arc.get("summary") or "").strip() or "(none)"))
+        text = "\n".join(parts)
+        return text, AIService.estimate_tokens(text)
+
+    @staticmethod
+    def build_context_with_chunk_reverse_lookup(
+        project_id: str,
+        chunk_ids: List[str],
+        current_arc_id: Optional[str],
+        token_limit: int = 12000,
+    ) -> Tuple[str, List[str], int]:
+        """
+        V6 MODULE 3: Assemble context from chunk IDs using Triangle (Macro/Meso/Micro).
+        Optionally prepend arc scope. Returns (full_context, sources, total_tokens).
+        """
+        context_parts = []
+        sources = []
+        total_tokens = 0
+        if ArcService and current_arc_id:
+            arc_scope, t = ContextManager._build_arc_scope_context(project_id, current_arc_id, None)
+            if arc_scope:
+                context_parts.append(arc_scope)
+                total_tokens += t
+        if ReverseLookupAssembler and chunk_ids:
+            assembled, chunk_sources = ReverseLookupAssembler.assemble_from_chunks(chunk_ids, token_limit=token_limit)
+            if assembled:
+                context_parts.append("[REVERSE LOOKUP - Micro to Macro Evidence]\n" + assembled)
+                total_tokens += AIService.estimate_tokens(assembled)
+                sources.extend(chunk_sources)
+        return "\n\n".join(context_parts), sources, total_tokens
 
     @staticmethod
     def get_entity_relations(entity_id: Any, project_id: str) -> str:
@@ -951,9 +1113,11 @@ class ContextManager:
         router_result: Dict,
         project_id: str,
         persona: Dict,
-        strict_mode: bool = False
+        strict_mode: bool = False,
+        current_arc_id: Optional[str] = None,
+        session_state: Optional[Dict] = None,
     ) -> Tuple[str, List[str], int]:
-        """Xây dựng context từ router result với khả năng kết hợp"""
+        """Xây dựng context từ router result. V6: optional current_arc_id injects Arc scope (Standalone/Sequential)."""
         context_parts = []
         sources = []
         total_tokens = 0
@@ -961,6 +1125,14 @@ class ContextManager:
         persona_text = f"🎭 PERSONA: {persona['role']}\n{persona['core_instruction']}\n"
         context_parts.append(persona_text)
         total_tokens += AIService.estimate_tokens(persona_text)
+
+        # V6 MODULE 1: Arc scope (Past Arc Summaries + Current Arc)
+        if current_arc_id and ArcService:
+            arc_scope, arc_tokens = ContextManager._build_arc_scope_context(project_id, current_arc_id, session_state)
+            if arc_scope:
+                context_parts.append(arc_scope)
+                total_tokens += arc_tokens
+                sources.append("📐 Arc Scope")
 
         if strict_mode:
             strict_text = """
@@ -1006,7 +1178,31 @@ class ContextManager:
                 sources.extend(source_names)
                 total_tokens += AIService.estimate_tokens(full_text)
 
-        elif intent == "search_bible" or intent == "mixed_context":
+        elif intent == "search_chunks":
+            # Chunk vector search + reverse lookup (chunk -> chapter -> arc)
+            chunk_ids = []
+            chunk_rows = search_chunks_vector(
+                router_result.get("rewritten_query") or router_result.get("target_files", [""])[0] or "",
+                project_id,
+                arc_id=current_arc_id,
+                top_k=8,
+            )
+            if chunk_rows:
+                chunk_ids = [str(c.get("id")) for c in chunk_rows if c.get("id")]
+            if chunk_ids and ReverseLookupAssembler:
+                chunk_ctx, chunk_sources, chunk_tokens = ContextManager.build_context_with_chunk_reverse_lookup(
+                    project_id, chunk_ids, current_arc_id, token_limit=8000
+                )
+                if chunk_ctx:
+                    context_parts.append(chunk_ctx)
+                    total_tokens += chunk_tokens
+                    sources.extend(chunk_sources)
+                    sources.append("📦 Chunk + Reverse Lookup")
+            if not chunk_ids:
+                # Fallback: search bible
+                intent = "search_bible"
+
+        if intent == "search_bible" or intent == "mixed_context":
             bible_context = ""
             for entity in target_bible_entities:
                 raw_list = HybridSearch.smart_search_hybrid_raw(entity, project_id, top_k=2)
@@ -1143,6 +1339,39 @@ Trả về đúng một chuỗi, ví dụ: [CHARACTER] hoặc [RULE]."""
     except Exception as e:
         print(f"suggest_import_category error: {e}")
         return "[OTHER]"
+
+
+def generate_arc_summary_from_chapters(chapter_summaries: List[Dict[str, Any]], arc_name: str = "") -> Optional[str]:
+    """Từ danh sách tóm tắt chương, AI tạo tóm tắt ngắn cho Arc. Trả về str hoặc None nếu lỗi."""
+    if not chapter_summaries or not isinstance(chapter_summaries, list):
+        return None
+    parts = []
+    for i, ch in enumerate(chapter_summaries):
+        num = ch.get("chapter_number") or ch.get("num") or (i + 1)
+        summ = ch.get("summary") or ch.get("description") or ""
+        if summ:
+            parts.append(f"Chương {num}: {summ}")
+    if not parts:
+        return None
+    combined = "\n".join(parts)
+    try:
+        model = getattr(Config, "METADATA_MODEL", None) or "google/gemini-2.5-flash"
+        prompt = f"""Các tóm tắt chương thuộc Arc '{arc_name or 'Unnamed'}':
+
+{combined}
+
+Nhiệm vụ: Viết 1 đoạn tóm tắt ngắn gọn (2-5 câu) cho toàn bộ Arc, nối mạch các sự kiện/tình tiết chính. Chỉ trả về đoạn tóm tắt, không lời dẫn."""
+        resp = AIService.call_openrouter(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            temperature=0.3,
+            max_tokens=500,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        return raw if raw else None
+    except Exception as e:
+        print(f"generate_arc_summary_from_chapters error: {e}")
+        return None
 
 
 def generate_chapter_metadata(content: str) -> Dict[str, str]:

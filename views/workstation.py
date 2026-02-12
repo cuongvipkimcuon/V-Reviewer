@@ -11,6 +11,7 @@ from ai_engine import AIService, HybridSearch, ContextManager, generate_chapter_
 from utils.file_importer import UniversalLoader
 from utils.auth_manager import check_permission, submit_pending_change
 from utils.cache_helpers import get_chapters_cached, invalidate_cache_and_rerun
+from persona import PersonaSystem
 
 
 def render_workstation_tab(project_id, persona):
@@ -94,6 +95,27 @@ def render_workstation_tab(project_id, persona):
                 db_title = f"Chapter {chap_num}"
                 db_review = ""
 
+        # Arc & Persona cho Workstation
+        try:
+            from core.arc_service import ArcService
+            arcs = ArcService.list_arcs(project_id, status="active") if project_id else []
+        except Exception:
+            arcs = []
+        arc_options = ["(Không gán arc)"] + [a.get("name", "") for a in arcs]
+        cur_arc_id = selected_chapter_row.get("arc_id") if selected_chapter_row else None
+        default_arc_idx = 0
+        if cur_arc_id and arcs:
+            for i, a in enumerate(arcs):
+                if str(a.get("id")) == str(cur_arc_id):
+                    default_arc_idx = i + 1
+                    break
+        arc_idx = st.selectbox("📐 Arc chương này", range(len(arc_options)), index=default_arc_idx, format_func=lambda i: arc_options[i] if i < len(arc_options) else "", key="ws_chapter_arc")
+        chapter_arc_id = arcs[arc_idx - 1]["id"] if arc_idx and arc_idx > 0 and arc_idx <= len(arcs) else None
+
+        personas_avail = PersonaSystem.get_available_personas()
+        ws_persona_key = st.selectbox("🎭 Persona cho Review & Extract", personas_avail, key="ws_persona_select")
+        ws_persona = PersonaSystem.get_persona(ws_persona_key)
+
         # Toolbar: các nút action gọn trên 1 hàng
         btn_cols = st.columns([2, 1, 1, 1, 1, 1, 2])
         with btn_cols[0]:
@@ -143,12 +165,10 @@ def render_workstation_tab(project_id, persona):
                     can_request = check_permission(user_id, user_email, project_id, "request_write")
                     try:
                         if can_write:
-                            supabase.table("chapters").upsert({
-                                "story_id": project_id,
-                                "chapter_number": chap_num,
-                                "title": current_title,
-                                "content": current_content,
-                            }, on_conflict="story_id, chapter_number").execute()
+                            payload = {"story_id": project_id, "chapter_number": chap_num, "title": current_title, "content": current_content}
+                            if chapter_arc_id:
+                                payload["arc_id"] = chapter_arc_id
+                            supabase.table("chapters").upsert(payload, on_conflict="story_id, chapter_number").execute()
                             st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
                             st.toast("Đã lưu & Đang cập nhật metadata...", icon="💾")
                             st.session_state.current_file_content = current_content
@@ -196,14 +216,26 @@ def render_workstation_tab(project_id, persona):
                 uid = getattr(st.session_state.get("user"), "id", None) or ""
                 uem = getattr(st.session_state.get("user"), "email", None) or ""
                 if check_permission(uid, uem, project_id, "write"):
-                    try:
-                        supabase.table("chapters").delete().eq("story_id", project_id).eq("chapter_number", chap_num).execute()
-                        st.success(f"Đã xóa chương #{chap_num}.")
-                        st.cache_data.clear()
-                        st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Lỗi xóa chương: {e}")
+                    chap_arc_id = selected_chapter_row.get("arc_id") if selected_chapter_row else None
+                    arc_archived = False
+                    if chap_arc_id:
+                        try:
+                            from core.arc_service import ArcService
+                            arc_row = ArcService.get_arc(chap_arc_id)
+                            arc_archived = arc_row and arc_row.get("status") == "archived"
+                        except Exception:
+                            pass
+                    if arc_archived:
+                        st.warning("Chương thuộc Arc đã archive. Bỏ archive Arc trước khi xóa chương.")
+                    else:
+                        try:
+                            supabase.table("chapters").delete().eq("story_id", project_id).eq("chapter_number", chap_num).execute()
+                            st.success(f"Đã xóa chương #{chap_num}.")
+                            st.cache_data.clear()
+                            st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Lỗi xóa chương: {e}")
                 else:
                     st.warning("Chỉ Owner mới được xóa chương.")
         with btn_cols[6]:
@@ -438,7 +470,7 @@ def render_workstation_tab(project_id, persona):
                     THÔNG TIN TỪ BIBLE (Context): {context}
                     NỘI DUNG CẦN REVIEW:
                     {content}
-                    NHIỆM VỤ: {persona.get('review_prompt', 'Review nội dung này')}
+                    NHIỆM VỤ: {ws_persona.get('review_prompt', 'Review nội dung này')}
                     YÊU CẦU:
                     1. Chỉ ra điểm mạnh/yếu.
                     2. Phát hiện lỗi logic (plot hole) hoặc lỗi code so với Context.
@@ -529,11 +561,12 @@ def render_workstation_tab(project_id, persona):
                             for i, chunk_content in enumerate(chunks):
                                 my_bar.progress(int((i / total_chunks) * 90), text=f"Đang đọc hiểu phần {i+1}/{total_chunks}...")
 
+                                ext_persona = PersonaSystem.get_persona(st.session_state.get("ws_persona_select", "Writer"))
                                 ext_prompt = f"""
                             NỘI DUNG (Phần {i+1}/{total_chunks}):
                             {chunk_content}
 
-                            NHIỆM VỤ: Trích xuất các thực thể quan trọng (Nhân vật, Địa danh, Vật phẩm, Chiêu thức, Khái niệm, Sự kiện...) từ nội dung trên.
+                            NHIỆM VỤ: {ext_persona.get('extractor_prompt', 'Trích xuất các thực thể quan trọng từ nội dung trên.')}
 
                             ⛔️ YÊU CẦU ĐỊNH DẠNG (JSON BẮT BUỘC):
                             1. Trả về một JSON Object duy nhất chứa key "items".
@@ -760,6 +793,77 @@ def render_workstation_tab(project_id, persona):
                                             st.markdown("---")
                             if not rel_pending:
                                 st.info("Không có đề xuất quan hệ nào, hoặc bạn đã xác nhận/hủy hết.")
+
+                            # Bước 3: Chunking nội dung chương
+                            extract_content = st.session_state.get('extract_content', '')
+                            _chap_num = st.session_state.get('extract_chapter_num', 0)
+                            temp_chunks = st.session_state.get('temp_extract_chunks')
+                            chunking_done = st.session_state.get('extract_chunking_done', False)
+
+                            if extract_content and not chunking_done:
+                                st.markdown("---")
+                                st.caption("**Bước 3:** Chunk nội dung chương đang extract → chỉnh sửa & xác nhận → lưu chunks.")
+                                if temp_chunks is None:
+                                    if st.button("📄 Phân tích Chunk", key="extract_chunk_analyze"):
+                                        with st.spinner("Đang phân tích chiến lược chunk..."):
+                                            strategy = analyze_split_strategy(extract_content, file_type="story", context_hint="Đoạn văn có ý nghĩa")
+                                            chunks_list = execute_split_logic(extract_content, strategy["split_type"], strategy["split_value"])
+                                            if chunks_list:
+                                                st.session_state['temp_extract_chunks'] = chunks_list
+                                                st.rerun()
+                                            else:
+                                                st.warning("Không tách được chunk. Thử chiến lược mặc định.")
+                                                st.session_state['temp_extract_chunks'] = execute_split_logic(extract_content, "by_length", "2000")
+                                                st.rerun()
+                                else:
+                                    edited = []
+                                    for i, c in enumerate(temp_chunks):
+                                        with st.expander(f"Chunk {i+1}: {c.get('title','')[:40]}...", expanded=(i < 2)):
+                                            new_content = st.text_area("Nội dung", value=c.get("content", ""), height=120, key=f"ext_chunk_edit_{i}")
+                                            edited.append({"title": c.get("title",""), "content": new_content or c.get("content",""), "order": c.get("order", i+1)})
+                                    st.session_state['temp_extract_chunks'] = edited
+                                    col_ok, col_skip = st.columns(2)
+                                    with col_ok:
+                                        if st.button("✅ Xác nhận & Lưu Chunks", type="primary", key="extract_chunk_confirm"):
+                                            uid = getattr(st.session_state.get("user"), "id", None) or ""
+                                            uem = getattr(st.session_state.get("user"), "email", None) or ""
+                                            if not check_permission(uid, uem, project_id, "write"):
+                                                st.warning("Chỉ Owner mới được lưu chunks.")
+                                            else:
+                                                ch_row = supabase.table("chapters").select("id, arc_id").eq("story_id", project_id).eq("chapter_number", _chap_num).limit(1).execute()
+                                                chapter_id = ch_row.data[0]["id"] if ch_row.data else None
+                                                arc_id = ch_row.data[0].get("arc_id") if ch_row.data else None
+                                                prog = st.progress(0)
+                                                saved = 0
+                                                for idx, chk in enumerate(edited):
+                                                    txt = chk.get("content", "").strip()
+                                                    if txt:
+                                                        vec = AIService.get_embedding(txt)
+                                                        payload = {
+                                                            "story_id": project_id,
+                                                            "chapter_id": chapter_id,
+                                                            "arc_id": arc_id,
+                                                            "content": txt,
+                                                            "raw_content": txt,
+                                                            "meta_json": {"source": "extract_bible", "chapter": _chap_num, "title": chk.get("title","")},
+                                                            "sort_order": chk.get("order", idx+1),
+                                                        }
+                                                        if vec:
+                                                            payload["embedding"] = vec
+                                                        supabase.table("chunks").insert(payload).execute()
+                                                        saved += 1
+                                                    prog.progress(int((idx+1)/len(edited)*100))
+                                                st.session_state['extract_chunking_done'] = True
+                                                st.session_state.pop('temp_extract_chunks', None)
+                                                st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                                                st.success(f"Đã lưu {saved} chunks. Bấm Hoàn tất để đóng.")
+                                                st.rerun()
+                                    with col_skip:
+                                        if st.button("⏭️ Bỏ qua Chunking", key="extract_chunk_skip"):
+                                            st.session_state['extract_chunking_done'] = True
+                                            st.session_state.pop('temp_extract_chunks', None)
+                                            st.rerun()
+
                             if st.button("✅ Hoàn tất Extract", type="primary", key="extract_finish"):
                                 st.session_state['extract_bible_mode'] = False
                                 st.session_state['temp_extracted_data'] = None
@@ -767,6 +871,8 @@ def render_workstation_tab(project_id, persona):
                                 st.session_state.pop('extract_content', None)
                                 st.session_state.pop('extract_bible_saved', None)
                                 st.session_state.pop('temp_relation_suggestions', None)
+                                st.session_state.pop('temp_extract_chunks', None)
+                                st.session_state.pop('extract_chunking_done', None)
                                 st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
                                 invalidate_cache_and_rerun()
         else:

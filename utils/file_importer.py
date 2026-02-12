@@ -1,5 +1,5 @@
-# utils/file_importer.py - Universal file loader: .docx, .pdf, .xlsx, .xls, .csv, .txt, .md
-from typing import Tuple, Optional
+# utils/file_importer.py - Universal file loader + V6 Excel row-by-row (Messy Data Parser)
+from typing import Tuple, Optional, List, Dict, Any
 
 # Optional deps: import inside methods to avoid hard fail if not installed
 
@@ -139,3 +139,66 @@ class UniversalLoader:
             return "", "Cần cài đặt pandas: pip install pandas"
         except Exception as e:
             return "", f"File CSV lỗi hoặc không đọc được: {str(e)}"
+
+    # -------------------------------------------------------------------------
+    # V6 MODULE 2: Excel row-by-row -> Markdown Chunks with Metadata (Reverse Traceability)
+    # -------------------------------------------------------------------------
+    @classmethod
+    def load_excel_as_chunks(
+        cls,
+        file,
+        source_file_name: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """
+        Process Excel row-by-row. Each row becomes one Markdown chunk.
+        CRITICAL: Preserve Metadata (Sheet Name, Row Index, Source File) for Reverse Traceability.
+        Returns (list of {raw_content, content, meta_json}, error_message).
+        content: markdown representation of the row (e.g. table row or key: value).
+        meta_json: {source_metadata: {sheet_name, row_index, source_file}}.
+        """
+        if file is None:
+            return [], "Không có file được chọn."
+        name = getattr(file, "name", "") or source_file_name or ""
+        ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext not in (".xlsx", ".xls"):
+            return [], "Chỉ hỗ trợ Excel (.xlsx, .xls) cho load_excel_as_chunks."
+        try:
+            file.seek(0)
+            raw = file.read()
+        except Exception as e:
+            return [], str(e)
+        try:
+            import pandas as pd
+            from io import BytesIO
+        except ImportError:
+            return [], "Cần cài đặt pandas và openpyxl: pip install pandas openpyxl"
+        try:
+            df_dict = pd.read_excel(BytesIO(raw), sheet_name=None, header=None)
+        except Exception as e:
+            return [], "File Excel lỗi hoặc không đọc được: %s" % e
+        chunks = []
+        for sheet_name, frame in df_dict.items():
+            for row_idx, row in frame.iterrows():
+                row_idx_int = int(row_idx) + 2  # 1-based + header
+                parts = []
+                for c, v in row.items():
+                    if pd.isna(v):
+                        continue
+                    parts.append("%s: %s" % (c, str(v).strip()))
+                raw_content = "\n".join(parts) if parts else ""
+                content = raw_content
+                if not content.strip():
+                    continue
+                meta_json = {
+                    "source_metadata": {
+                        "sheet_name": str(sheet_name),
+                        "row_index": row_idx_int,
+                        "source_file": name or "uploaded",
+                    }
+                }
+                chunks.append({
+                    "raw_content": raw_content,
+                    "content": content,
+                    "meta_json": meta_json,
+                })
+        return chunks, None

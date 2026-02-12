@@ -16,31 +16,36 @@ def render_prefix_setup():
             st.warning("Không kết nối được dịch vụ.")
             return
         supabase = services["supabase"]
-        r = supabase.table("bible_prefix_config").select("id, prefix_key, description, sort_order").order("sort_order").execute()
+        r = supabase.table("bible_prefix_config").select("id, prefix_key, description, sort_order, persona_key").order("sort_order").execute()
         rows = r.data if r.data else []
     except Exception as e:
         st.warning(f"Bảng bible_prefix_config chưa tồn tại hoặc lỗi: {e}. Chạy schema_prefix_persona.sql trong Supabase.")
         return
+    personas_list = PersonaSystem.get_available_personas()
     for row in rows:
         prefix_key = (row.get("prefix_key") or "").strip().upper()
         with st.expander(f"[{row.get('prefix_key', '')}] {row.get('description', '')[:50]}..."):
             st.text_input("Prefix key", value=row.get("prefix_key", ""), key=f"pk_{row.get('id')}", disabled=True)
             st.text_area("Mô tả", value=row.get("description", ""), key=f"desc_{row.get('id')}", height=80)
             st.number_input("Thứ tự", value=int(row.get("sort_order") or 0), key=f"ord_{row.get('id')}", min_value=0)
+            persona_val = None
+            if prefix_key not in ("RULE", "CHAT", "OTHER"):
+                cur_pk = row.get("persona_key") or ""
+                idx = personas_list.index(cur_pk) + 1 if cur_pk in personas_list else 0
+                persona_sel = st.selectbox("Persona (Extract dùng)", ["(Không)"] + personas_list, index=idx, key=f"persona_{row.get('id')}")
+                persona_val = None if persona_sel == "(Không)" else persona_sel
             col_upd, col_del = st.columns(2)
             with col_upd:
                 if st.button("💾 Cập nhật", key=f"upd_{row.get('id')}"):
                     try:
-                        supabase.table("bible_prefix_config").update(
-                            {
-                                "description": st.session_state.get(
-                                    f"desc_{row.get('id')}", row.get("description")
-                                ),
-                                "sort_order": st.session_state.get(
-                                    f"ord_{row.get('id')}", row.get("sort_order")
-                                ),
-                            }
-                        ).eq("id", row["id"]).execute()
+                        upd = {
+                            "description": st.session_state.get(f"desc_{row.get('id')}", row.get("description")),
+                            "sort_order": st.session_state.get(f"ord_{row.get('id')}", row.get("sort_order")),
+                        }
+                        if prefix_key not in ("RULE", "CHAT", "OTHER"):
+                            pk = st.session_state.get(f"persona_{row.get('id')}", "(Không)")
+                            upd["persona_key"] = None if pk == "(Không)" else pk
+                        supabase.table("bible_prefix_config").update(upd).eq("id", row["id"]).execute()
                         st.success("Đã cập nhật.")
                         invalidate_cache_and_rerun()
                     except Exception as ex:

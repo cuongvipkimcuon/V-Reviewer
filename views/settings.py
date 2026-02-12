@@ -5,12 +5,14 @@ from .setup_tabs import render_prefix_setup, render_persona_setup
 
 
 def render_settings_tab():
-    """Tab Settings — hợp nhất Cấu hình AI, Quản lý Tiền tố Bible, Cấu hình Personas (V5.1)."""
+    """Tab Settings Ver 6.0 — Account, AI Model (từ sidebar), Cấu hình AI, Giao diện, Bible & Personas."""
     st.header("⚙️ Settings")
+    st.caption("Ver 6.0: Tất cả tùy chỉnh AI chuyển vào đây.")
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "👤 Account",
-        "🤖 Cấu hình AI",
+        "🤖 AI Model",
+        "⚙️ Cấu hình AI",
         "🎨 Giao diện",
         "📋 Bible & Personas",
     ])
@@ -31,7 +33,17 @@ def render_settings_tab():
                     st.error("Hai mật khẩu mới không khớp.")
 
     with tab2:
-        st.subheader("🤖 Cấu hình AI")
+        st.subheader("🤖 AI Model (Model, Temperature, Context)")
+        model_category = st.selectbox("Model Category", list(Config.AVAILABLE_MODELS.keys()), key="settings_model_cat")
+        available = Config.AVAILABLE_MODELS[model_category]
+        selected = st.selectbox("Model", available, key="settings_model")
+        st.session_state["selected_model"] = selected
+        st.session_state["temperature"] = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1, key="settings_temp")
+        st.session_state["context_size"] = st.select_slider("Context Size", ["low", "medium", "high", "max"], "medium", key="settings_ctx")
+        st.success("Đã áp dụng. Các giá trị này dùng cho Chat và Workstation.")
+
+    with tab3:
+        st.subheader("⚙️ Cấu hình AI chi tiết")
         st.selectbox(
             "Nhóm model mặc định",
             list(Config.AVAILABLE_MODELS.keys()),
@@ -76,7 +88,7 @@ def render_settings_tab():
             else:
                 st.warning("Nhập ít nhất một prefix.")
 
-    with tab3:
+    with tab4:
         st.subheader("🎨 Giao diện")
         theme = st.selectbox("Theme", ["Light", "Dark", "Auto"], index=2, help="Giao diện sáng/tối/tự động.")
         font_size = st.select_slider("Cỡ chữ", options=["Small", "Medium", "Large"], value="Medium")
@@ -84,8 +96,8 @@ def render_settings_tab():
         if st.button("✅ Áp dụng giao diện", type="primary"):
             st.success("Đã áp dụng (có thể cần refresh trang).")
 
-    with tab4:
-        st.caption("Quản lý Tiền tố Bible (bảng prefix) và Personas (phong cách AI).")
+    with tab5:
+        st.caption("Quản lý Tiền tố Bible (gắn persona) và Personas. RULE, CHAT, OTHER không gắn persona.")
         with st.expander("📋 Quản lý Tiền tố Bible", expanded=True):
             render_prefix_setup()
         with st.expander("🎭 Cấu hình Personas", expanded=False):

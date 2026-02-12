@@ -238,7 +238,8 @@ class SessionManager:
                 'chat_crystallized_topic': None,
                 'pending_new_rule': None,
                 'rule_analysis': None,
-                'edit_rule_manual': None
+                'edit_rule_manual': None,
+                'current_arc_id': None,
             })
 
     def check_login(self):
@@ -270,14 +271,23 @@ class SessionManager:
         return False
 
     def render_login_form(self):
-        """Hiển thị form đăng nhập/đăng ký"""
-        st.markdown("<div class='animate-fadeIn'>", unsafe_allow_html=True)
+        """Hiển thị form đăng nhập/đăng ký - Ver 6.0"""
+        st.markdown("""
+        <style>
+        .login-hero { text-align: center; padding: 2rem 0; }
+        .login-hero h1 { font-size: 2.8rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 2rem 0; }
+        .feature-card { background: linear-gradient(145deg, #f8fafc 0%, #e2e8f0 100%); border-radius: 16px; padding: 24px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.08); transition: transform 0.2s; }
+        .feature-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(102,126,234,0.2); }
+        .feature-card .icon { font-size: 2.5rem; margin-bottom: 12px; }
+        .feature-card h4 { color: #2d3748; font-size: 1rem; margin: 0 0 8px 0; }
+        .feature-card p { color: #64748b; font-size: 0.85rem; margin: 0; }
+        </style>
+        """, unsafe_allow_html=True)
 
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.markdown("<h1 style='text-align: center;'>🚀 V-Universe AI Hub Pro</h1>", unsafe_allow_html=True)
-            st.markdown("<p style='text-align: center; color: #666;'>Your Intelligent Writing & Development Assistant</p>", unsafe_allow_html=True)
-
+        st.markdown('<div class="login-hero">', unsafe_allow_html=True)
+        st.markdown("<h1>🚀 V-Universe AI Hub Pro</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='color: #64748b; font-size: 1.1rem;'>Ver 6.0 — Your Intelligent Writing & Development Assistant</p>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
         col1, col2, col3 = st.columns([1, 3, 1])
@@ -286,7 +296,7 @@ class SessionManager:
             with st.container():
                 st.markdown("<div class='card'>", unsafe_allow_html=True)
 
-                tab_login, tab_register = st.tabs(["🔐 Login", "📝 Register"])
+                tab_login, tab_register = st.tabs(["🔐 Đăng nhập", "📝 Đăng ký"])
 
                 with tab_login:
                     st.subheader("Welcome Back")
@@ -361,15 +371,15 @@ class SessionManager:
                 st.markdown("</div>", unsafe_allow_html=True)
 
                 st.markdown("""
-                <div style='margin-top: 30px; text-align: center;'>
-                    <h4>✨ Features</h4>
-                    <div class='metric-container'>
-                        <div class='card'><strong>🤖 Multi-AI</strong><br>20+ AI Models</div>
-                        <div class='card'><strong>📝 Smart Writer</strong><br>AI Writing Assistant</div>
-                        <div class='card'><strong>💻 Code Genius</strong><br>Programming Helper</div>
-                        <div class='card'><strong>📚 Knowledge Base</strong><br>Smart Bible System</div>
-                        <div class='card'><strong>🔍 Hybrid Search</strong><br>Vector + Keyword</div>
-                        <div class='card'><strong>🧠 Rule Mining</strong><br>Learn from Chat</div>
+                <div style='margin-top: 40px;'>
+                    <h4 style='text-align: center; color: #2d3748; margin-bottom: 24px;'>✨ Ver 6.0 — Tính năng nổi bật</h4>
+                    <div class='feature-grid'>
+                        <div class='feature-card'><div class='icon'>🤖</div><h4>Multi-AI</h4><p>20+ models OpenRouter</p></div>
+                        <div class='feature-card'><div class='icon'>🎯</div><h4>Semantic Intent</h4><p>Khớp câu hỏi, bỏ Router</p></div>
+                        <div class='feature-card'><div class='icon'>📚</div><h4>Knowledge</h4><p>Bible, Rules, Chunking</p></div>
+                        <div class='feature-card'><div class='icon'>📐</div><h4>Arc</h4><p>Phân vùng timeline</p></div>
+                        <div class='feature-card'><div class='icon'>🧮</div><h4>Python Executor</h4><p>Tính toán số liệu</p></div>
+                        <div class='feature-card'><div class='icon'>🧠</div><h4>Rule Mining</h4><p>Học từ chat</p></div>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)

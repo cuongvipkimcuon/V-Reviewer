@@ -7,19 +7,19 @@ from utils.auth_manager import get_user_projects
 
 
 def render_sidebar(session_manager):
-    """Render sidebar với thông tin user và project"""
+    """Sidebar: Project, Arc, Quick Actions. Không còn navigation - chuyển sang main tabs."""
     with st.sidebar:
-        st.markdown("🚀 V-Universe AI Pro", unsafe_allow_html=True)
+        st.markdown("🚀 **V-Universe Ver 6.0**", unsafe_allow_html=True)
         if 'user' in st.session_state and st.session_state.user:
             user_email = st.session_state.user.email
-            st.markdown(f"_{user_email.split('@')}_", unsafe_allow_html=True)
+            st.markdown(f"_{user_email.split('@')[0]}_", unsafe_allow_html=True)
 
             budget = CostManager.get_user_budget(st.session_state.user.id)
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("💰 Credits", f"${budget.get('remaining_credits', 0):.2f}")
             with col2:
-                usage_percent = (budget.get('used_credits', 0) / budget.get('total_credits', 100)) * 100
+                usage_percent = (budget.get('used_credits', 0) / max(budget.get('total_credits', 100), 1)) * 100
                 st.metric("Usage", f"{usage_percent:.1f}%")
             st.markdown("---")
 
@@ -59,7 +59,28 @@ def render_sidebar(session_manager):
             st.session_state["persona"] = proj_type
 
             persona = PersonaSystem.get_persona(proj_type)
-            st.info(f"{persona['icon']} **{proj_type} Mode**")
+            st.info(f"{persona['icon']} **{proj_type}**")
+
+            try:
+                from core.arc_service import ArcService
+                arcs = ArcService.list_arcs(proj_id, status="active")
+                if arcs:
+                    arc_options = ["(Không)"] + [a.get("name") or str(a.get("id", ""))[:8] for a in arcs]
+                    arc_idx = st.selectbox(
+                        "📐 Arc",
+                        range(len(arc_options)),
+                        format_func=lambda i: arc_options[i] if i < len(arc_options) else "",
+                        key="arc_selector",
+                        help="Thu hẹp context Chat theo Arc (timeline). Chunking import gán arc mặc định."
+                    )
+                    if arc_idx and arc_idx > 0 and arc_idx <= len(arcs):
+                        st.session_state["current_arc_id"] = arcs[arc_idx - 1].get("id")
+                    else:
+                        st.session_state["current_arc_id"] = None
+                else:
+                    st.session_state["current_arc_id"] = None
+            except Exception:
+                st.session_state["current_arc_id"] = None
 
         st.markdown("---")
         if st.button("Create New Project", type="primary"):
@@ -68,13 +89,11 @@ def render_sidebar(session_manager):
         if st.session_state.get('show_new_project'):
             with st.form("new_project_form"):
                 title = st.text_input("Project Name")
-                category = st.selectbox("Category", PersonaSystem.get_available_personas())
-
                 if st.form_submit_button("Create"):
                     if title:
                         supabase.table("stories").insert({
                             "title": title,
-                            "category": category,
+                            "category": "Writer",
                             "user_id": st.session_state.user.id
                         }).execute()
                         st.success("Project created!")
@@ -82,41 +101,8 @@ def render_sidebar(session_manager):
                         st.rerun()
 
         st.markdown("---")
-        st.subheader("🤖 AI Settings")
-
-        model_category = st.selectbox(
-            "Model Category",
-            list(Config.AVAILABLE_MODELS.keys()),
-            index=1,
-            key="model_category"
-        )
-
-        available_models = Config.AVAILABLE_MODELS[model_category]
-        selected_model = st.selectbox(
-            "Select Model",
-            available_models,
-            index=0,
-            key="model_selector"
-        )
-        st.session_state['selected_model'] = selected_model
-
-        with st.expander("Advanced Settings"):
-            st.session_state['temperature'] = st.slider(
-                "Temperature",
-                min_value=0.0, max_value=1.0,
-                value=persona.get('temperature', 0.7),
-                step=0.1
-            )
-            st.session_state['context_size'] = st.select_slider(
-                "Context Size",
-                options=["low", "medium", "high", "max"],
-                value="medium"
-            )
-
-        st.markdown("---")
-
         st.subheader("⚡ Quick Actions")
-        if st.button("🔄 Refresh Session", use_container_width=True):
+        if st.button("🔄 Refresh", use_container_width=True):
             st.rerun()
 
         st.markdown("---")
@@ -127,12 +113,10 @@ def render_sidebar(session_manager):
                 session_manager.cookie_manager.delete("supabase_refresh_token", key="del_refresh_logout")
             except Exception:
                 pass
-
             for key in list(st.session_state.keys()):
                 if key != 'logging_out':
                     del st.session_state[key]
-
-            st.success("Logged out successfully!")
+            st.success("Logged out!")
             time.sleep(1)
             st.rerun()
 
