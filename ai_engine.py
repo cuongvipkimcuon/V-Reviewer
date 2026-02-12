@@ -1312,12 +1312,16 @@ class ContextManager:
 # 📝 AUTO-SUMMARY / CHAPTER METADATA (V5)
 # ==========================================
 def suggest_import_category(text: str) -> str:
-    """Gợi ý prefix/category cho nội dung import (dùng LLM nhẹ). Trả về prefix ví dụ [CHARACTER], [RULE]... hoặc [OTHER]. Defensive: lỗi thì trả về [OTHER]."""
+    """Gợi ý prefix/category cho nội dung import (dùng LLM nhẹ). Dùng prefix từ DB (get_prefixes), trả về [OTHER] nếu không khớp."""
     if not text or len(text.strip()) < 20:
         return "[OTHER]"
     try:
         model = getattr(Config, "METADATA_MODEL", None) or "google/gemini-2.5-flash"
-        prefixes = getattr(Config, "BIBLE_PREFIXES", ["[RULE]", "[CHARACTER]", "[LOCATION]", "[ITEM]", "[OTHER]"])
+        prefixes = Config.get_prefixes()
+        if not prefixes:
+            prefixes = list(getattr(Config, "BIBLE_PREFIXES", ["[RULE]", "[CHARACTER]", "[LOCATION]", "[ITEM]", "[OTHER]"]))
+        if "[OTHER]" not in prefixes:
+            prefixes = list(prefixes) + ["[OTHER]"]
         prompt = f"""Phân loại nội dung sau vào ĐÚNG MỘT trong các loại (chỉ trả về chuỗi loại, không giải thích):
 {', '.join(prefixes)}
 
@@ -1333,7 +1337,7 @@ Trả về đúng một chuỗi, ví dụ: [CHARACTER] hoặc [RULE]."""
         )
         raw = (resp.choices[0].message.content or "").strip()
         for p in prefixes:
-            if p in raw or p.strip("[]").lower() in raw.lower():
+            if p in raw or (p.strip("[]") and p.strip("[]").lower() in raw.lower()):
                 return p
         return "[OTHER]"
     except Exception as e:

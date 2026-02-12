@@ -111,6 +111,27 @@ class Config:
             pass
         return list(cls.BIBLE_PREFIXES)
 
+    # Prefix đặc biệt: không lưu trong DB, chỉ dùng khi tạo Bible mà không gán được prefix từ DB (giống RULE, CHAT là hệ thống).
+    PREFIX_SPECIAL_SYSTEM = ("RULE", "CHAT", "OTHER")
+
+    @classmethod
+    def get_allowed_prefix_keys_for_extract(cls) -> list:
+        """Danh sách prefix_key dùng cho Extract (từ DB, loại RULE/CHAT). OTHER không nằm trong DB, được thêm vào prompt và dùng khi không khớp."""
+        setup = cls.get_prefix_setup()
+        return [str(p.get("prefix_key", "")).strip() for p in setup if p.get("prefix_key") and str(p.get("prefix_key", "")).upper() not in ("RULE", "CHAT")]
+
+    @classmethod
+    def resolve_prefix_for_bible(cls, ai_type: str) -> str:
+        """Từ type do AI trả về (extract/import), trả về prefix_key hợp lệ hoặc OTHER nếu không khớp. Dùng khi tạo Bible."""
+        if not ai_type or not str(ai_type).strip():
+            return "OTHER"
+        allowed = cls.get_allowed_prefix_keys_for_extract()
+        normalized = (ai_type or "").strip().upper().replace(" ", "_").replace("[", "").replace("]", "")
+        for pk in allowed:
+            if (pk or "").strip().upper() == normalized:
+                return (pk or "").strip()
+        return "OTHER"
+
     @classmethod
     def get_prefix_setup(cls) -> list:
         """Lấy bảng Setup Tiền tố: list of {prefix_key, description, sort_order}. Dùng cho Router và Extract. Defensive: lỗi trả về [] hoặc fallback 2 dòng rule/chat."""
@@ -129,6 +150,13 @@ class Config:
         return [{"prefix_key": "RULE", "description": "Quy tắc, luật lệ.", "sort_order": 1}, {"prefix_key": "CHAT", "description": "Điểm nhớ từ hội thoại.", "sort_order": 2}]
 
     @classmethod
+    def _normalize_for_match(cls, s: str) -> str:
+        """Chuẩn hóa chuỗi để so khớp: lower, thay _ bằng space, bỏ khoảng thừa."""
+        if not s:
+            return ""
+        return (s or "").strip().lower().replace("_", " ").replace("  ", " ").strip()
+
+    @classmethod
     def map_extract_type_to_prefix(cls, item_type: str, item_description: str = "") -> str:
         """Ánh xạ type/description từ Extract sang prefix trong bảng; loại trừ RULE, CHAT; không khớp trả về OTHER."""
         try:
@@ -137,6 +165,7 @@ class Config:
             if not allowed:
                 return "OTHER"
             key_candidate = (item_type or "").strip().upper().replace(" ", "_")
+            key_normalized = cls._normalize_for_match(key_candidate.replace("_", " "))
             combined = f"{(item_type or '')} {(item_description or '')}".strip().lower()
             for p in allowed:
                 pk = (p.get("prefix_key") or "").strip().upper()
@@ -145,12 +174,19 @@ class Config:
             for p in allowed:
                 pk = (p.get("prefix_key") or "").strip().upper()
                 desc_lower = (p.get("description") or "").lower()
-                if key_candidate and key_candidate in desc_lower:
+                pk_normalized = cls._normalize_for_match(pk.replace("_", " "))
+                if key_normalized and (key_normalized in desc_lower or desc_lower in key_normalized):
+                    return pk
+                if key_candidate and (key_candidate in desc_lower or pk_normalized in key_normalized):
                     return pk
                 if desc_lower and desc_lower in combined:
                     return pk
                 if key_candidate and pk in key_candidate:
                     return pk
+                if desc_lower:
+                    words = desc_lower.split()[:4]
+                    if words and " ".join(words) in combined:
+                        return pk
             return "OTHER"
         except Exception:
             return "OTHER"
@@ -274,8 +310,10 @@ class SessionManager:
         """Hiển thị form đăng nhập/đăng ký - Ver 6.0"""
         st.markdown("""
         <style>
-        .login-hero { text-align: center; padding: 2rem 0; }
-        .login-hero h1 { font-size: 2.8rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .login-hero { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 2rem 0; width: 100%; }
+        .login-hero h1 { font-size: 2.8rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin: 0 auto; }
+        .login-hero p { margin: 0.5rem 0 0 0; }
+        .login-form-center { margin: 0 auto; max-width: 480px; }
         .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 2rem 0; }
         .feature-card { background: linear-gradient(145deg, #f8fafc 0%, #e2e8f0 100%); border-radius: 16px; padding: 24px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.08); transition: transform 0.2s; }
         .feature-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(102,126,234,0.2); }
@@ -293,6 +331,7 @@ class SessionManager:
         col1, col2, col3 = st.columns([1, 3, 1])
 
         with col2:
+            st.markdown('<div class="login-form-center">', unsafe_allow_html=True)
             with st.container():
                 st.markdown("<div class='card'>", unsafe_allow_html=True)
 
@@ -368,6 +407,7 @@ class SessionManager:
                         else:
                             st.error("Please fill all fields correctly")
 
+                st.markdown("</div>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
                 st.markdown("""

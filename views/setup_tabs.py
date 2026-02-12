@@ -62,6 +62,7 @@ def render_prefix_setup():
                             invalidate_cache_and_rerun()
                         except Exception as ex:
                             st.error(str(ex))
+    st.caption("Prefix đặc biệt (không chỉnh trong bảng): RULE, CHAT, OTHER. OTHER chỉ dùng khi tạo Bible mà không gán được prefix từ danh sách trên.")
     st.markdown("---")
     st.subheader("Thêm tiền tố mới")
     with st.form("add_prefix"):

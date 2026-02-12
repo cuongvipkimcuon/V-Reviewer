@@ -32,7 +32,8 @@ def render_bible_tab(project_id, persona):
         match = re.match(r"^(\[[^\]]+\])", entry.get("entity_name", "") or "")
         if match:
             all_prefixes.add(match.group(1))
-    available_prefixes = sorted(list(set(Config.get_prefixes() + list(all_prefixes))))
+    prefixes_from_config = Config.get_prefixes()
+    available_prefixes = sorted(list(set(prefixes_from_config + list(all_prefixes) + ["[OTHER]"])))
 
     col_act = st.columns([3, 2, 1])
     with col_act[2]:
@@ -331,9 +332,12 @@ def render_bible_tab(project_id, persona):
             col_type, col_custom = st.columns([2, 3])
 
             with col_type:
+                entry_type_options = list(Config.get_prefixes())
+                if "[OTHER]" not in entry_type_options:
+                    entry_type_options = entry_type_options + ["[OTHER]"]
                 entry_type = st.selectbox(
                     "Entry Type",
-                    Config.get_prefixes(),
+                    entry_type_options,
                     format_func=lambda x: x.replace("[", "").replace("]", "")
                 )
 

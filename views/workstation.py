@@ -562,6 +562,8 @@ def render_workstation_tab(project_id, persona):
                                 my_bar.progress(int((i / total_chunks) * 90), text=f"Đang đọc hiểu phần {i+1}/{total_chunks}...")
 
                                 ext_persona = PersonaSystem.get_persona(st.session_state.get("ws_persona_select", "Writer"))
+                                allowed_keys = Config.get_allowed_prefix_keys_for_extract()
+                                prefix_list_str = ", ".join(allowed_keys) + ", OTHER" if allowed_keys else "OTHER"
                                 ext_prompt = f"""
                             NỘI DUNG (Phần {i+1}/{total_chunks}):
                             {chunk_content}
@@ -571,7 +573,7 @@ def render_workstation_tab(project_id, persona):
                             ⛔️ YÊU CẦU ĐỊNH DẠNG (JSON BẮT BUỘC):
                             1. Trả về một JSON Object duy nhất chứa key "items".
                             2. KHÔNG viết lời dẫn, KHÔNG dùng markdown code block.
-                            3. Trường "type": Hãy tự đặt tên loại thực thể bằng TIẾNG VIỆT dựa trên ngữ cảnh.
+                            3. Trường "type": phải là đúng MỘT trong các key sau (viết IN HOA, không dấu ngoặc): {prefix_list_str}. Nếu không khớp loại nào thì dùng OTHER.
                             4. "description": Tóm tắt ngắn gọn vai trò/đặc điểm (dưới 50 từ).
 
                             ⚠️ QUAN TRỌNG:
@@ -581,7 +583,7 @@ def render_workstation_tab(project_id, persona):
                             VÍ DỤ CẤU TRÚC (CHỈ ĐỂ THAM KHẢO FORMAT, KHÔNG ĐƯỢC CHÉP):
                         {{
                             "items": [
-                                {{ "entity_name": "Tên_Thực_Thể_Tìm_Thấy", "type": "Loại_Của_Nó", "description": "Mô_tả_ngắn_gọn..." }}
+                                {{ "entity_name": "Tên_Thực_Thể", "type": "CHARACTER", "description": "Mô_tả_ngắn..." }}
                                     ]
                         }}
                             """
@@ -679,8 +681,8 @@ def render_workstation_tab(project_id, persona):
                                         for idx, item in enumerate(unique_items):
                                             desc = item.get('description', '')
                                             raw_name = item.get('entity_name', 'Unknown')
-                                            raw_type_str = item.get('type', 'Khác').strip()
-                                            prefix_key = Config.map_extract_type_to_prefix(raw_type_str, desc)
+                                            raw_type_str = item.get('type', 'OTHER').strip()
+                                            prefix_key = Config.resolve_prefix_for_bible(raw_type_str)
                                             final_name = f"[{prefix_key}] {raw_name}" if not raw_name.startswith("[") else raw_name
                                             if desc:
                                                 vec = AIService.get_embedding(desc)
@@ -728,6 +730,39 @@ def render_workstation_tab(project_id, persona):
                                 id_to_name = {}
                             if rel_pending:
                                 st.caption("**Bước 2:** Xác nhận quan hệ giữa các thực thể, sau đó bấm Hoàn tất.")
+                                batch_a, batch_b = st.columns(2)
+                                with batch_a:
+                                    if st.button("✅ Xác nhận tất cả", type="primary", key="ext_rel_confirm_all"):
+                                        uid = getattr(st.session_state.get("user"), "id", None) or ""
+                                        uem = getattr(st.session_state.get("user"), "email", None) or ""
+                                        if check_permission(uid, uem, project_id, "write"):
+                                            errs = []
+                                            for item in list(rel_pending):
+                                                try:
+                                                    if item.get("kind") == "relation":
+                                                        supabase.table("entity_relations").insert({
+                                                            "source_entity_id": item["source_entity_id"],
+                                                            "target_entity_id": item["target_entity_id"],
+                                                            "relation_type": item.get("relation_type", "liên quan"),
+                                                            "description": item.get("description", "") or "",
+                                                            "story_id": project_id,
+                                                        }).execute()
+                                                    else:
+                                                        supabase.table("story_bible").update({"parent_id": item["parent_entity_id"]}).eq("id", item["entity_id"]).execute()
+                                                except Exception as ex:
+                                                    errs.append(str(ex))
+                                            st.session_state["temp_relation_suggestions"] = []
+                                            st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                                            if errs:
+                                                st.warning("Đã lưu nhưng một số lỗi: " + "; ".join(errs[:3]))
+                                            st.rerun()
+                                        else:
+                                            st.warning("Chỉ Owner mới được xác nhận.")
+                                with batch_b:
+                                    if st.button("❌ Hủy tất cả", key="ext_rel_reject_all"):
+                                        st.session_state["temp_relation_suggestions"] = []
+                                        st.rerun()
+                                st.markdown("---")
                                 for i, item in enumerate(rel_pending):
                                     if item.get("kind") == "relation":
                                         src_name = id_to_name.get(item.get("source_entity_id"), str(item.get("source_entity_id", "")))
