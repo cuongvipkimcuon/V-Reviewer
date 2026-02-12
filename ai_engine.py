@@ -92,6 +92,40 @@ class AIService:
             return None
 
     @staticmethod
+    def get_embeddings_batch(texts: List[str], batch_size: int = 100) -> List[Optional[List[float]]]:
+        """Lấy embedding hàng loạt (nhiều text trong ít request). Trả về list cùng thứ tự với texts; phần tử lỗi là None."""
+        if not texts:
+            return []
+        out: List[Optional[List[float]]] = [None] * len(texts)
+        valid_indices: List[int] = []
+        valid_texts: List[str] = []
+        for i, t in enumerate(texts):
+            if t and isinstance(t, str) and t.strip():
+                valid_indices.append(i)
+                valid_texts.append(t.strip())
+        if not valid_texts:
+            return out
+        try:
+            client = OpenAI(
+                base_url=Config.OPENROUTER_BASE_URL,
+                api_key=Config.OPENROUTER_API_KEY
+            )
+            for start in range(0, len(valid_texts), batch_size):
+                chunk = valid_texts[start:start + batch_size]
+                chunk_indices = valid_indices[start:start + batch_size]
+                response = client.embeddings.create(
+                    model=Config.EMBEDDING_MODEL,
+                    input=chunk
+                )
+                for j, emb_obj in enumerate(response.data):
+                    idx = chunk_indices[j] if j < len(chunk_indices) else start + j
+                    if idx < len(out) and emb_obj.embedding is not None:
+                        out[idx] = emb_obj.embedding
+        except Exception as e:
+            print(f"Embedding batch error: {e}")
+        return out
+
+    @staticmethod
     def estimate_tokens(text: str) -> int:
         """Ước tính số token"""
         if not text:

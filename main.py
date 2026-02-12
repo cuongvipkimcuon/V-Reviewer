@@ -11,6 +11,8 @@ from views import (
     render_dashboard_tab,
     render_chat_tab,
     render_workstation_tab,
+    render_data_analyze_tab,
+    render_review_tab,
     render_bible_tab,
     render_cost_tab,
     render_settings_tab,
@@ -59,6 +61,8 @@ TAB_STRUCTURE = {
     "workspace": [
         ("dashboard", "📊 Dashboard", "render_dashboard_tab", False),
         ("workstation", "✍️ Workstation", "render_workstation_tab", True),
+        ("data_analyze", "📊 Data Analyze", "render_data_analyze_tab", False),
+        ("review", "🤖 Review", "render_review_tab", False),
         ("python_executor", "🧮 Python Executor", "render_python_executor_tab", False),
     ],
     "knowledge": [
@@ -82,6 +86,8 @@ TAB_STRUCTURE = {
 RENDER_MAP = {
     "render_dashboard_tab": render_dashboard_tab,
     "render_workstation_tab": render_workstation_tab,
+    "render_data_analyze_tab": render_data_analyze_tab,
+    "render_review_tab": render_review_tab,
     "render_python_executor_tab": render_python_executor_tab,
     "render_bible_tab": render_bible_tab,
     "render_rules_tab": render_rules_tab,

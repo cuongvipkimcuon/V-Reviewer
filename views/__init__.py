@@ -9,6 +9,8 @@ from .settings import render_settings_tab
 from .collaboration import render_collaboration_tab
 from .setup_tabs import render_prefix_setup, render_persona_setup
 from .data_health import render_data_health_tab
+from .data_analyze import render_data_analyze_tab
+from .review import render_review_tab
 
 try:
     from .rules_view import render_rules_tab
@@ -62,6 +64,8 @@ __all__ = [
     "render_prefix_setup",
     "render_persona_setup",
     "render_data_health_tab",
+    "render_data_analyze_tab",
+    "render_review_tab",
     "render_rules_tab",
     "render_chunking_tab",
     "render_python_executor_tab",
