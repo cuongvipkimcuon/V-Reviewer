@@ -1,16 +1,14 @@
-# views/chunking_view.py - UI Chunking (Excel theo dòng, Word theo ngữ nghĩa) + Vector hóa
-"""Chunking UI: Excel (by row), Word (semantic). Chunks được vector hóa và dùng reverse lookup trong flow chính."""
+# views/chunking_view.py - Danh sách chunks đã lưu: xem, sửa nội dung, vector lại, xóa
+"""Chunking: chỉ quản lý chunks đã lưu. Logic tách chunk (Workstation) nằm trong utils.chunk_tools."""
 import streamlit as st
-from datetime import datetime
 
 from config import init_services
-from ai_engine import AIService, suggest_relations
-from utils.file_importer import UniversalLoader
+from ai_engine import AIService
 from utils.auth_manager import check_permission
 
 
 def _ensure_chunks_table(supabase):
-    """Đảm bảo chunks table tồn tại (schema v6)."""
+    """Đảm bảo bảng chunks tồn tại (schema v6)."""
     try:
         supabase.table("chunks").select("id").limit(1).execute()
         return True
@@ -19,9 +17,9 @@ def _ensure_chunks_table(supabase):
 
 
 def render_chunking_tab(project_id):
-    """Tab Chunking - Import Excel (theo dòng) và Word (theo ngữ nghĩa có gắn ngữ cảnh), vector hóa."""
-    st.subheader("✂️ Chunking & Vector Store")
-    st.caption("Excel: cắt theo dòng. Word: cắt theo đoạn ngữ nghĩa có ngữ cảnh. Chunks được vector hóa để search trong Chat.")
+    """Tab Chunking - Chỉ hiển thị và quản lý chunks đã lưu: sửa nội dung, vector lại, xóa."""
+    st.subheader("✂️ Chunks đã lưu")
+    st.caption("Chunks được vector hóa để search trong Chat. Sửa nội dung rồi bấm **Cập nhật & Vector lại** để không phải chunk lại từ đầu.")
 
     if not project_id:
         st.info("📁 Chọn Project trước.")
@@ -44,185 +42,84 @@ def render_chunking_tab(project_id):
         project_id and user_id
         and check_permission(str(user_id), user_email or "", project_id, "write")
     )
-    if not can_write:
-        st.warning("Chỉ user có quyền ghi mới import chunk.")
-        return
-
-    current_arc_id = st.session_state.get("current_arc_id")
     can_delete = check_permission(str(user_id or ""), user_email or "", project_id, "delete")
 
-    tab_excel, tab_word, tab_list = st.tabs(["📊 Excel (theo dòng)", "📄 Word (theo ngữ nghĩa)", "📋 Chunks đã lưu"])
+    r = supabase.table("chunks").select(
+        "id, content, raw_content, source_type, meta_json, arc_id, chapter_id, sort_order"
+    ).eq("story_id", project_id).order("sort_order").execute()
+    chunks_list = r.data or []
 
-    with tab_excel:
-        st.markdown("#### Excel - Chunk theo dòng")
-        st.caption("Mỗi dòng Excel = 1 chunk. Metadata: sheet_name, row_index, source_file.")
-        try:
-            uploaded = st.file_uploader("Chọn file Excel", type=["xlsx", "xls"], key="chunk_excel_upload")
-            if uploaded:
-                chunks, err = UniversalLoader.load_excel_as_chunks(uploaded)
-                if err:
-                    st.error(err)
-                elif chunks:
-                    st.success(f"Đã parse {len(chunks)} dòng thành chunks.")
-                    preview = st.slider("Xem trước N chunk đầu", 1, min(20, len(chunks)), 5, key="excel_preview")
-                    for i, c in enumerate(chunks[:preview]):
-                        meta = c.get("meta_json") or {}
-                        sm = meta.get("source_metadata", {})
-                        with st.expander(f"Chunk {i+1}: {sm.get('sheet_name','')} row {sm.get('row_index','')}"):
-                            st.text(c.get("content", "")[:500])
-                    if st.button("💾 Import & Vector hóa (Excel)", type="primary", key="import_excel_chunks"):
-                        with st.spinner("Đang tạo embedding và lưu chunks..."):
-                            saved = 0
-                            for i, c in enumerate(chunks):
-                                content = c.get("content", "") or c.get("raw_content", "")
-                                if not content.strip():
-                                    continue
-                                vec = AIService.get_embedding(content)
-                                if vec:
-                                    meta = c.get("meta_json") or {}
-                                    meta["source_type"] = "excel_row"
-                                    payload = {
-                                        "story_id": project_id,
-                                        "raw_content": content,
-                                        "content": content,
-                                        "meta_json": meta,
-                                        "sort_order": i,
-                                        "source_type": "excel_row",
-                                    }
-                                    try:
-                                        payload["embedding"] = vec
-                                    except Exception:
-                                        pass
-                                    if current_arc_id:
-                                        payload["arc_id"] = current_arc_id
-                                    try:
-                                        supabase.table("chunks").insert(payload).execute()
-                                        saved += 1
-                                    except Exception as e:
-                                        if "embedding" in str(e).lower() or "vector" in str(e).lower():
-                                            payload.pop("embedding", None)
-                                            try:
-                                                supabase.table("chunks").insert(payload).execute()
-                                                saved += 1
-                                            except Exception:
-                                                pass
-                                        else:
-                                            st.error(f"Lỗi chunk {i+1}: {e}")
-                            st.success(f"Đã lưu {saved} chunks.")
-                            st.rerun()
-        except ImportError as e:
-            st.error(f"Thiếu dependency: {e}")
+    st.metric("Tổng chunks", len(chunks_list))
 
-    with tab_word:
-        st.markdown("#### Word - Chunk theo ngữ nghĩa (có ngữ cảnh)")
-        st.caption("AI tách theo đoạn văn có ý nghĩa, mỗi chunk gắn ngữ cảnh (heading/đoạn trước).")
-        uploaded_word = st.file_uploader("Chọn file Word (.docx)", type=["docx"], key="chunk_word_upload")
-        if uploaded_word:
-            text, err = UniversalLoader.load(uploaded_word)
-            if err:
-                st.error(err)
-            elif text:
-                # Chunk theo paragraph có ngữ cảnh (đoạn trước + đoạn hiện tại)
-                from ai_engine import analyze_split_strategy, execute_split_logic
-                strategy = analyze_split_strategy(text, file_type="story", context_hint="Đoạn văn có ý nghĩa")
-                semantic_chunks = execute_split_logic(text, strategy["split_type"], strategy["split_value"])
-                if not semantic_chunks and text:
-                    # Fallback: cắt theo độ dài 2000 ký tự có overlap ngữ cảnh
-                    chunk_size = 2000
-                    overlap = 200
-                    semantic_chunks = []
-                    start = 0
-                    idx = 1
-                    while start < len(text):
-                        end = min(start + chunk_size, len(text))
-                        part = text[start:end]
-                        # Thêm ngữ cảnh: 100 ký tự trước
-                        ctx_start = max(0, start - overlap)
-                        context_prefix = text[ctx_start:start] if ctx_start < start else ""
-                        full_content = (context_prefix + "\n\n[---]\n\n" + part) if context_prefix else part
-                        semantic_chunks.append({
-                            "title": f"Đoạn {idx}",
-                            "content": full_content.strip(),
-                            "order": idx
-                        })
-                        start = end - overlap
-                        idx += 1
+    for c in chunks_list:
+        cid = c.get("id")
+        content = (c.get("content") or c.get("raw_content") or "").strip()
+        meta = c.get("meta_json") or {}
+        sm = meta.get("source_metadata", meta) if isinstance(meta, dict) else meta
+        label = (
+            sm.get("sheet_name", "")
+            or sm.get("source_file", "")
+            or (meta.get("title") if isinstance(meta, dict) else "")
+            or c.get("source_type", "")
+            or str(cid or "")[:8]
+        )
+        short = (content[:60] + "…") if len(content) > 60 else content
 
-                if semantic_chunks:
-                    st.success(f"Đã tách {len(semantic_chunks)} đoạn ngữ nghĩa.")
-                    preview = st.slider("Xem trước N chunk", 1, min(10, len(semantic_chunks)), 3, key="word_preview")
-                    for i, c in enumerate(semantic_chunks[:preview]):
-                        with st.expander(f"Chunk {i+1}: {c.get('title','')}"):
-                            st.text((c.get("content", "") or "")[:600])
-                    if st.button("💾 Import & Vector hóa (Word)", type="primary", key="import_word_chunks"):
-                        with st.spinner("Đang tạo embedding và lưu chunks..."):
-                            saved = 0
-                            for i, c in enumerate(semantic_chunks):
-                                content = c.get("content", "") or ""
-                                if not content.strip():
-                                    continue
-                                vec = AIService.get_embedding(content)
-                                meta = {
-                                    "source_metadata": {
-                                        "source_file": getattr(uploaded_word, "name", "uploaded.docx"),
-                                        "chunk_index": i + 1,
-                                        "source_type": "word_semantic",
-                                    },
-                                    "source_type": "word_semantic",
-                                }
-                                payload = {
-                                    "story_id": project_id,
-                                    "raw_content": content,
-                                    "content": content,
-                                    "meta_json": meta,
-                                    "sort_order": i,
-                                    "source_type": "word_semantic",
-                                }
+        with st.expander(f"Chunk: {label} — {short}", expanded=False):
+            st.text(content[:500] + ("…" if len(content) > 500 else ""))
+
+            if can_write:
+                edit_key = f"chunk_edit_{cid}"
+                update_key = f"chunk_update_vec_{cid}"
+                new_content = st.text_area(
+                    "Sửa nội dung (sau đó bấm Cập nhật & Vector lại)",
+                    value=content,
+                    height=120,
+                    key=edit_key,
+                )
+                if st.button("🔄 Cập nhật & Vector lại", key=update_key, type="primary"):
+                    if not (new_content and new_content.strip()):
+                        st.warning("Nội dung không được để trống.")
+                    else:
+                        with st.spinner("Đang tạo embedding mới..."):
+                            vec = AIService.get_embedding(new_content.strip())
+                            if vec:
                                 try:
-                                    payload["embedding"] = vec
-                                except Exception:
-                                    pass
-                                if current_arc_id:
-                                    payload["arc_id"] = current_arc_id
-                                try:
-                                    supabase.table("chunks").insert(payload).execute()
-                                    saved += 1
+                                    supabase.table("chunks").update({
+                                        "content": new_content.strip(),
+                                        "raw_content": new_content.strip(),
+                                        "embedding": vec,
+                                    }).eq("id", cid).execute()
+                                    st.success("Đã cập nhật nội dung và vector.")
+                                    st.rerun()
                                 except Exception as e:
-                                    if "embedding" in str(e).lower():
-                                        payload.pop("embedding", None)
+                                    if "embedding" in str(e).lower() or "vector" in str(e).lower():
                                         try:
-                                            supabase.table("chunks").insert(payload).execute()
-                                            saved += 1
-                                        except Exception:
-                                            pass
+                                            supabase.table("chunks").update({
+                                                "content": new_content.strip(),
+                                                "raw_content": new_content.strip(),
+                                            }).eq("id", cid).execute()
+                                            st.success("Đã cập nhật nội dung (embedding bỏ qua do lỗi DB).")
+                                            st.rerun()
+                                        except Exception as e2:
+                                            st.error(str(e2))
                                     else:
-                                        st.error(f"Lỗi chunk {i+1}: {e}")
-                            st.success(f"Đã lưu {saved} chunks Word.")
-                            st.rerun()
-            else:
-                st.info("File rỗng hoặc không đọc được.")
+                                        st.error(str(e))
+                            else:
+                                st.warning("Không tạo được embedding.")
 
-    with tab_list:
-        r = supabase.table("chunks").select("id, content, source_type, meta_json, arc_id").eq("story_id", project_id).order("sort_order").execute()
-        chunks_list = r.data or []
-        st.metric("Tổng chunks", len(chunks_list))
-        for c in chunks_list:
-            meta = c.get("meta_json") or {}
-            sm = meta.get("source_metadata", meta) if isinstance(meta, dict) else {}
-            label = sm.get("sheet_name", "") or sm.get("source_file", "") or c.get("source_type", "") or str(c.get("id", ""))[:8]
-            with st.expander(f"Chunk: {label} — {c.get('content','')[:50]}...", expanded=False):
-                st.text(c.get("content", "")[:500])
-                if can_delete and st.button("🗑️ Xóa", key=f"chunk_del_{c.get('id')}"):
-                    supabase.table("chunks").delete().eq("id", c["id"]).execute()
-                    st.success("Đã xóa.")
-                    st.rerun()
-        st.markdown("---")
-        with st.expander("💀 Danger Zone", expanded=False):
-            st.markdown('<div class="danger-zone">', unsafe_allow_html=True)
-            if can_delete and chunks_list:
-                confirm = st.checkbox("Xóa sạch TẤT CẢ chunks", key="chunk_confirm_clear")
-                if confirm and st.button("🗑️ Xóa sạch Chunks"):
-                    supabase.table("chunks").delete().eq("story_id", project_id).execute()
-                    st.success("Đã xóa sạch.")
-                    st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+            if can_delete and st.button("🗑️ Xóa", key=f"chunk_del_{cid}"):
+                supabase.table("chunks").delete().eq("id", cid).execute()
+                st.success("Đã xóa.")
+                st.rerun()
+
+    st.markdown("---")
+    with st.expander("💀 Danger Zone", expanded=False):
+        st.markdown('<div class="danger-zone">', unsafe_allow_html=True)
+        if can_delete and chunks_list:
+            confirm = st.checkbox("Xóa sạch TẤT CẢ chunks", key="chunk_confirm_clear")
+            if confirm and st.button("🗑️ Xóa sạch Chunks"):
+                supabase.table("chunks").delete().eq("story_id", project_id).execute()
+                st.success("Đã xóa sạch.")
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
