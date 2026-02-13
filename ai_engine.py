@@ -160,6 +160,23 @@ class AIService:
         return text
 
 
+def cap_context_to_tokens(text: str, max_tokens: int) -> Tuple[str, int]:
+    """Kiểm tra và cắt context sao cho không vượt quá max_tokens. Cắt từ cuối để giữ phần đầu (persona, rules...)."""
+    if not text or max_tokens <= 0:
+        return text or "", AIService.estimate_tokens(text or "")
+    est = AIService.estimate_tokens(text)
+    if est <= max_tokens:
+        return text, est
+    # Ước tính: estimate_tokens = len//4, nên target_chars ≈ max_tokens * 4
+    target_chars = max_tokens * 4
+    out = text[:target_chars] if len(text) > target_chars else text
+    est = AIService.estimate_tokens(out)
+    while est > max_tokens and len(out) > 500:
+        out = out[:-500]
+        est = AIService.estimate_tokens(out)
+    return out, est
+
+
 # ==========================================
 # 🔍 HYBRID SEARCH SYSTEM (V5 - Re-ranking + lookup stats)
 # ==========================================
@@ -1250,8 +1267,10 @@ class ContextManager:
         strict_mode: bool = False,
         current_arc_id: Optional[str] = None,
         session_state: Optional[Dict] = None,
+        free_chat_mode: bool = False,
+        max_context_tokens: Optional[int] = None,
     ) -> Tuple[str, List[str], int]:
-        """Xây dựng context từ router result. V6: optional current_arc_id injects Arc scope (Standalone/Sequential)."""
+        """Xây dựng context từ router result. max_context_tokens: giới hạn độ dài (từ Settings Context Size); None = không giới hạn."""
         context_parts = []
         sources = []
         total_tokens = 0
@@ -1259,6 +1278,17 @@ class ContextManager:
         persona_text = f"🎭 PERSONA: {persona['role']}\n{persona['core_instruction']}\n"
         context_parts.append(persona_text)
         total_tokens += AIService.estimate_tokens(persona_text)
+
+        if free_chat_mode:
+            rules_text = ContextManager.get_mandatory_rules(project_id)
+            if rules_text:
+                context_parts.append(rules_text)
+                total_tokens += AIService.estimate_tokens(rules_text)
+            free_instruction = "[CHẾ ĐỘ CHAT TỰ DO / CHAT PHIẾM]\nTrả lời như chatbot thông thường, dựa trên kiến thức tổng quát. Không bắt buộc dựa vào dữ liệu dự án (Bible/chunk/file); có thể trả lời mọi chủ đề."
+            context_parts.append(free_instruction)
+            total_tokens += AIService.estimate_tokens(free_instruction)
+            sources.append("🌐 Chat tự do")
+            return "\n".join(context_parts), sources, total_tokens
 
         # V6 MODULE 1: Arc scope (Past Arc Summaries + Current Arc)
         if current_arc_id and ArcService:
@@ -1449,7 +1479,10 @@ class ContextManager:
                 sources.extend(source_names)
                 total_tokens += AIService.estimate_tokens(full_text)
 
-        return "\n".join(context_parts), sources, total_tokens
+        context_str = "\n".join(context_parts)
+        if max_context_tokens is not None and total_tokens > max_context_tokens:
+            context_str, total_tokens = cap_context_to_tokens(context_str, max_context_tokens)
+        return context_str, sources, total_tokens
 
 
 # ==========================================

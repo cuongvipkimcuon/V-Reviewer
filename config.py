@@ -75,6 +75,9 @@ class Config:
     # Model rẻ cho auto-summary / metadata (Workstation)
     METADATA_MODEL = "google/gemini-2.5-flash"
 
+    # Context size (token limit) cho Chat - Settings "Context Size"
+    CONTEXT_SIZE_TOKENS = {"low": 15000, "medium": 60000, "high": 123000, "max": None}
+
     @classmethod
     def get_prefixes(cls) -> list:
         """Lấy danh sách prefix dạng [X] từ DB: ưu tiên bảng bible_prefix_config (get_prefix_setup), rồi settings. Không set cứng; không có dữ liệu thì trả về []."""

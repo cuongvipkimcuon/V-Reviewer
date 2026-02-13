@@ -148,6 +148,11 @@ def render_chat_tab(project_id, persona):
             value=False,
             help="Bật cái này để Router chỉ phân tích câu hiện tại, không bị nhiễu bởi chat cũ."
         )
+        st.session_state['free_chat_mode'] = st.toggle(
+            "🌐 Chat tự do / Phiếm",
+            value=st.session_state.get('free_chat_mode', False),
+            help="Bật: trả lời như chatbot thường (kiến thức tổng quát), không dùng Bible/chunk/file. Persona và Rule vẫn áp dụng."
+        )
         st.divider()
         st.write("### 🕰️ Context Depth")
         st.session_state["history_depth"] = st.slider(
@@ -207,39 +212,46 @@ def render_chat_tab(project_id, persona):
                         for m in visible_msgs[-5:]
                     ])
 
-                # Semantic Intent: nếu khớp >= ngưỡng thì dùng data trực tiếp (không cần intent)
-                semantic_match = None
-                try:
-                    svc = init_services()
-                    if svc:
-                        r = svc["supabase"].table("settings").select("value").eq("key", "semantic_intent_no_use").execute()
-                        no_use = r.data and r.data[0] and int(r.data[0].get("value", 0)) == 1
-                        if not no_use:
-                            semantic_match = check_semantic_intent(prompt, project_id)
-                except Exception:
-                    semantic_match = check_semantic_intent(prompt, project_id)
-                if semantic_match:
+                free_chat_mode = st.session_state.get('free_chat_mode', False)
+                if free_chat_mode:
                     router_out = {"intent": "chat_casual", "target_files": [], "target_bible_entities": [], "rewritten_query": prompt, "chapter_range": None, "chapter_range_mode": None, "chapter_range_count": 5}
-                    if semantic_match.get("related_data"):
-                        router_out["_semantic_data"] = semantic_match["related_data"]
-                    debug_notes.append(f"🎯 Semantic match {int(semantic_match.get('similarity',0)*100)}%")
+                    debug_notes = ["Intent: chat_casual", "🌐 Chat tự do"]
                 else:
-                    router_out = SmartAIRouter.ai_router_pro_v2(prompt, recent_history_text, project_id)
+                    debug_notes = []
+                    # Semantic Intent: nếu khớp >= ngưỡng thì dùng data trực tiếp (không cần intent)
+                    semantic_match = None
+                    try:
+                        svc = init_services()
+                        if svc:
+                            r = svc["supabase"].table("settings").select("value").eq("key", "semantic_intent_no_use").execute()
+                            no_use = r.data and r.data[0] and int(r.data[0].get("value", 0)) == 1
+                            if not no_use:
+                                semantic_match = check_semantic_intent(prompt, project_id)
+                    except Exception:
+                        semantic_match = check_semantic_intent(prompt, project_id)
+                    if semantic_match:
+                        router_out = {"intent": "chat_casual", "target_files": [], "target_bible_entities": [], "rewritten_query": prompt, "chapter_range": None, "chapter_range_mode": None, "chapter_range_count": 5}
+                        if semantic_match.get("related_data"):
+                            router_out["_semantic_data"] = semantic_match["related_data"]
+                        debug_notes.append(f"🎯 Semantic match {int(semantic_match.get('similarity',0)*100)}%")
+                    else:
+                        router_out = SmartAIRouter.ai_router_pro_v2(prompt, recent_history_text, project_id)
+                    debug_notes = [f"Intent: {router_out.get('intent', 'chat_casual')}"] + debug_notes
+                    if st.session_state.get('router_ignore_history'):
+                        debug_notes.append("⚡️ Router: Ignored History")
                 intent = router_out.get('intent', 'chat_casual')
                 targets = router_out.get('target_files', [])
                 rewritten_query = router_out.get('rewritten_query', prompt)
 
-                debug_notes = [f"Intent: {intent}"]
-                if st.session_state.get('router_ignore_history'):
-                    debug_notes.append("⚡️ Router: Ignored History")
-
+                max_context_tokens = Config.CONTEXT_SIZE_TOKENS.get(st.session_state.get("context_size", "medium"))
                 exec_result = None
-                if intent == "numerical_calculation":
+                if intent == "numerical_calculation" and not free_chat_mode:
                     context_text, sources, context_tokens = ContextManager.build_context(
                         router_out, project_id, active_persona,
                         st.session_state.get('strict_mode', False),
                         current_arc_id=st.session_state.get('current_arc_id'),
                         session_state=dict(st.session_state),
+                        max_context_tokens=max_context_tokens,
                     )
                     code_prompt = f"""User hỏi: "{prompt}"
 Context có sẵn:
@@ -278,8 +290,10 @@ Chỉ trả về code trong block ```python ... ```, không giải thích."""
                         st.session_state.get('strict_mode', False),
                         current_arc_id=st.session_state.get('current_arc_id'),
                         session_state=dict(st.session_state),
+                        free_chat_mode=free_chat_mode,
+                        max_context_tokens=max_context_tokens,
                     )
-                    if router_out.get("_semantic_data"):
+                    if not free_chat_mode and router_out.get("_semantic_data"):
                         context_text = f"[SEMANTIC INTENT - Data]\n{router_out['_semantic_data']}\n\n{context_text}"
                         sources.append("🎯 Semantic Intent")
 
@@ -290,7 +304,7 @@ Chỉ trả về code trong block ```python ... ```, không giải thích."""
                 run_instruction = active_persona['core_instruction']
                 run_temperature = st.session_state.get('temperature', 0.7)
 
-                if st.session_state.get('strict_mode'):
+                if st.session_state.get('strict_mode') and not free_chat_mode:
                     run_temperature = 0.0
 
                 messages = []
