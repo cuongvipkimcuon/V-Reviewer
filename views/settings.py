@@ -73,8 +73,9 @@ def render_settings_tab():
         if st.button("💾 Lưu cấu hình AI", type="primary"):
             if custom_prefixes:
                 prefixes = [p.strip() for p in custom_prefixes.split("\n") if p.strip()]
-                if "[RULE]" not in prefixes:
-                    prefixes.append("[RULE]")
+                for k in getattr(Config, "PREFIX_SPECIAL_SYSTEM", ()) or ():
+                    if k != "OTHER" and f"[{k}]" not in prefixes:
+                        prefixes.append(f"[{k}]")
                 try:
                     services = init_services()
                     if services:

@@ -14,11 +14,27 @@ from .review import render_review_tab
 
 try:
     from .rules_view import render_rules_tab
-except ImportError as e:
+except ImportError:
     def render_rules_tab(project_id, persona):
         import streamlit as st
         st.warning("Rules view failed to load. Check views/rules_view.py")
     render_rules_tab.__module__ = "views"
+
+try:
+    from .chat_management_view import render_chat_management_tab
+except ImportError:
+    def render_chat_management_tab(project_id, persona):
+        import streamlit as st
+        st.warning("Chat management view failed to load.")
+    render_chat_management_tab.__module__ = "views"
+
+try:
+    from .relations_view import render_relations_tab
+except ImportError:
+    def render_relations_tab(project_id, persona):
+        import streamlit as st
+        st.warning("Relations view failed to load.")
+    render_relations_tab.__module__ = "views"
 
 try:
     from .chunking_view import render_chunking_tab
@@ -67,6 +83,8 @@ __all__ = [
     "render_data_analyze_tab",
     "render_review_tab",
     "render_rules_tab",
+    "render_chat_management_tab",
+    "render_relations_tab",
     "render_chunking_tab",
     "render_python_executor_tab",
     "render_arc_tab",

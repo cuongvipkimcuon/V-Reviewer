@@ -75,24 +75,9 @@ class Config:
     # Model rẻ cho auto-summary / metadata (Workstation)
     METADATA_MODEL = "google/gemini-2.5-flash"
 
-    # Bible prefixes mặc định (fallback khi không lấy được từ DB)
-    BIBLE_PREFIXES = [
-        "[RULE]",
-        "[CHARACTER]",
-        "[LOCATION]",
-        "[CONCEPT]",
-        "[ITEM]",
-        "[EVENT]",
-        "[SYSTEM]",
-        "[LORE]",
-        "[TECH]",
-        "[META]",
-        "[CHAT]",
-    ]
-
     @classmethod
     def get_prefixes(cls) -> list:
-        """Lấy danh sách prefix dạng [X]: ưu tiên bảng bible_prefix_config, fallback settings, rồi BIBLE_PREFIXES."""
+        """Lấy danh sách prefix dạng [X] từ DB: ưu tiên bảng bible_prefix_config (get_prefix_setup), rồi settings. Không set cứng; không có dữ liệu thì trả về []."""
         try:
             setup = cls.get_prefix_setup()
             if setup:
@@ -109,16 +94,23 @@ class Config:
                         return [str(p) for p in val]
         except Exception:
             pass
-        return list(cls.BIBLE_PREFIXES)
+        return []
 
     # Prefix đặc biệt: không lưu trong DB, chỉ dùng khi tạo Bible mà không gán được prefix từ DB (giống RULE, CHAT là hệ thống).
     PREFIX_SPECIAL_SYSTEM = ("RULE", "CHAT", "OTHER")
 
     @classmethod
-    def get_allowed_prefix_keys_for_extract(cls) -> list:
-        """Danh sách prefix_key dùng cho Extract (từ DB, loại RULE/CHAT). OTHER không nằm trong DB, được thêm vào prompt và dùng khi không khớp."""
+    def get_valid_prefix_keys(cls) -> set:
+        """Tập prefix_key hợp lệ từ DB (get_prefix_setup), chuẩn hóa HOA. Dùng để lọc inferred_prefixes từ Router."""
         setup = cls.get_prefix_setup()
-        return [str(p.get("prefix_key", "")).strip() for p in setup if p.get("prefix_key") and str(p.get("prefix_key", "")).upper() not in ("RULE", "CHAT")]
+        return {str(p.get("prefix_key", "")).strip().upper().replace(" ", "_") for p in setup if p.get("prefix_key")}
+
+    @classmethod
+    def get_allowed_prefix_keys_for_extract(cls) -> list:
+        """Danh sách prefix_key dùng cho Extract (từ DB, loại các key hệ thống RULE/CHAT). OTHER thêm vào prompt khi không khớp."""
+        setup = cls.get_prefix_setup()
+        exclude = [k for k in (cls.PREFIX_SPECIAL_SYSTEM or ()) if k != "OTHER"]
+        return [str(p.get("prefix_key", "")).strip() for p in setup if p.get("prefix_key") and str(p.get("prefix_key", "")).upper() not in exclude]
 
     @classmethod
     def resolve_prefix_for_bible(cls, ai_type: str) -> str:
@@ -134,11 +126,11 @@ class Config:
 
     @classmethod
     def get_prefix_setup(cls) -> list:
-        """Lấy bảng Setup Tiền tố: list of {prefix_key, description, sort_order}. Dùng cho Router và Extract. Defensive: lỗi trả về [] hoặc fallback 2 dòng rule/chat."""
+        """Lấy bảng Setup Tiền tố từ DB: list of {prefix_key, description, sort_order}. Dùng cho Router và Extract. Không set cứng; lỗi hoặc không có dữ liệu trả về []."""
         try:
             services = init_services()
             if not services:
-                return [{"prefix_key": "RULE", "description": "Quy tắc, luật lệ.", "sort_order": 1}, {"prefix_key": "CHAT", "description": "Điểm nhớ từ hội thoại.", "sort_order": 2}]
+                return []
             try:
                 r = services["supabase"].table("entity_setup").select("prefix_key, description, sort_order").order("sort_order").execute()
             except Exception:
@@ -147,7 +139,7 @@ class Config:
                 return [{"prefix_key": x.get("prefix_key", ""), "description": x.get("description", ""), "sort_order": x.get("sort_order", 0)} for x in r.data]
         except Exception:
             pass
-        return [{"prefix_key": "RULE", "description": "Quy tắc, luật lệ.", "sort_order": 1}, {"prefix_key": "CHAT", "description": "Điểm nhớ từ hội thoại.", "sort_order": 2}]
+        return []
 
     @classmethod
     def _normalize_for_match(cls, s: str) -> str:
@@ -161,7 +153,8 @@ class Config:
         """Ánh xạ type/description từ Extract sang prefix trong bảng; loại trừ RULE, CHAT; không khớp trả về OTHER."""
         try:
             setup = cls.get_prefix_setup()
-            allowed = [p for p in setup if p.get("prefix_key") and str(p.get("prefix_key", "")).upper() not in ("RULE", "CHAT")]
+            exclude = [k for k in (cls.PREFIX_SPECIAL_SYSTEM or ()) if k != "OTHER"]
+            allowed = [p for p in setup if p.get("prefix_key") and str(p.get("prefix_key", "")).upper() not in exclude]
             if not allowed:
                 return "OTHER"
             key_candidate = (item_type or "").strip().upper().replace(" ", "_")

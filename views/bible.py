@@ -6,10 +6,21 @@ import pandas as pd
 import streamlit as st
 
 from config import Config, init_services
-from ai_engine import AIService, HybridSearch, suggest_import_category, suggest_relations
+from ai_engine import AIService, HybridSearch, suggest_import_category
 from utils.file_importer import UniversalLoader
 from utils.auth_manager import check_permission, submit_pending_change
 from utils.cache_helpers import get_bible_list_cached, invalidate_cache_and_rerun
+
+# Tiền tố khóa (chỉ sửa nội dung, không sửa tiền tố): lấy từ Config.PREFIX_SPECIAL_SYSTEM, bỏ OTHER.
+def _get_locked_prefixes():
+    return tuple(f"[{k}]" for k in (getattr(Config, "PREFIX_SPECIAL_SYSTEM", ()) or ()) if k != "OTHER")
+
+
+def _entry_has_locked_prefix(entry) -> bool:
+    """Kiểm tra entry có prefix bị khóa (chỉ sửa nội dung, không sửa tiền tố)."""
+    name = entry.get("entity_name") or ""
+    locked = _get_locked_prefixes()
+    return any(name.startswith(p) for p in locked)
 
 
 def render_bible_tab(project_id, persona):
@@ -64,9 +75,11 @@ def render_bible_tab(project_id, persona):
                     st.session_state['import_suggested_category'] = suggested
                     st.session_state['import_file_id'] = id(uploaded)
                 suggested = st.session_state.get('import_suggested_category', "[OTHER]")
-                prefixes = Config.get_prefixes()
+                prefixes = [p for p in Config.get_prefixes() if p != "[CHAT]"]
                 if "[OTHER]" not in prefixes and suggested == "[OTHER]":
                     prefixes = list(prefixes) + ["[OTHER]"]
+                if suggested == "[CHAT]":
+                    suggested = "[OTHER]"
                 cat = st.selectbox(
                     "Category (gợi ý từ nội dung)",
                     prefixes,
@@ -134,105 +147,6 @@ def render_bible_tab(project_id, persona):
             if st.button("Đóng Import", key="import_close"):
                 st.session_state['import_knowledge_mode'] = False
                 st.rerun()
-
-    # --- Đề xuất quan hệ mới: AI gợi ý -> Cards [Xác nhận] [Hủy] ---
-    id_to_name = {e["id"]: e.get("entity_name", "") for e in bible_data_all}
-    with st.expander("🔗 Đề xuất quan hệ mới (AI)", expanded=bool(st.session_state.get("relation_suggestions"))):
-        st.caption("Dán nội dung chương hoặc đoạn văn; AI sẽ so khớp với Bible và gợi ý quan hệ giữa thực thể hoặc gợi ý đặt parent (nhân vật tiến hóa 1-n).")
-        relation_content = st.text_area(
-            "Nội dung cần phân tích",
-            value=st.session_state.get("relation_suggest_content", ""),
-            height=120,
-            placeholder="Dán đoạn/chương truyện có nhắc tên nhân vật, địa điểm, sự kiện...",
-            key="relation_suggest_content_input",
-            help="AI sẽ so khớp với Bible và gợi ý quan hệ giữa thực thể hoặc gợi ý đặt parent (nhân vật tiến hóa).",
-        )
-        if relation_content:
-            st.session_state["relation_suggest_content"] = relation_content
-        if st.button("🤖 Gợi ý quan hệ", key="relation_suggest_btn"):
-            if relation_content and relation_content.strip():
-                with st.spinner("AI đang phân tích..."):
-                    suggestions = suggest_relations(relation_content.strip(), project_id)
-                    st.session_state["relation_suggestions"] = suggestions
-                if not suggestions:
-                    st.info("Không tìm thấy đề xuất nào phù hợp.")
-                else:
-                    st.success(f"Tìm thấy {len(suggestions)} đề xuất.")
-            else:
-                st.warning("Nhập nội dung trước khi gợi ý.")
-
-        pending = st.session_state.get("relation_suggestions") or []
-        for i, item in enumerate(pending):
-            if item.get("kind") == "relation":
-                src_name = id_to_name.get(item.get("source_entity_id"), str(item.get("source_entity_id", "")))
-                tgt_name = id_to_name.get(item.get("target_entity_id"), str(item.get("target_entity_id", "")))
-                with st.container():
-                    st.markdown(
-                        f"**{src_name}** — *{item.get('relation_type', '')}* — **{tgt_name}**  \n"
-                        f"_{item.get('description', '')}_"
-                    )
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("✅ Xác nhận", key=f"rel_confirm_{i}"):
-                            uid = getattr(st.session_state.get("user"), "id", None) or ""
-                            uem = getattr(st.session_state.get("user"), "email", None) or ""
-                            if check_permission(uid, uem, project_id, "write"):
-                                try:
-                                    payload = {
-                                        "source_entity_id": item["source_entity_id"],
-                                        "target_entity_id": item["target_entity_id"],
-                                        "relation_type": item.get("relation_type", "liên quan"),
-                                        "description": item.get("description", "") or "",
-                                        "story_id": project_id,
-                                    }
-                                    supabase.table("entity_relations").insert(payload).execute()
-                                    st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
-                                    pending.pop(i)
-                                    st.session_state["relation_suggestions"] = pending
-                                    st.success("Đã lưu quan hệ.")
-                                    st.rerun()
-                                except Exception as ex:
-                                    st.error(f"Lỗi: {ex}")
-                            else:
-                                st.warning("Chỉ Owner mới được thêm quan hệ.")
-                    with c2:
-                        if st.button("❌ Hủy", key=f"rel_reject_{i}"):
-                            pending.pop(i)
-                            st.session_state["relation_suggestions"] = pending
-                            st.rerun()
-                    st.markdown("---")
-            else:
-                # kind == "parent"
-                ent_name = id_to_name.get(item.get("entity_id"), str(item.get("entity_id", "")))
-                par_name = id_to_name.get(item.get("parent_entity_id"), str(item.get("parent_entity_id", "")))
-                with st.container():
-                    st.markdown(
-                        f"**Đặt parent (1-n):** *{ent_name}* → gốc **{par_name}**  \n"
-                        f"_{item.get('reason', '')}_"
-                    )
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("✅ Xác nhận", key=f"parent_confirm_{i}"):
-                            uid = getattr(st.session_state.get("user"), "id", None) or ""
-                            uem = getattr(st.session_state.get("user"), "email", None) or ""
-                            if check_permission(uid, uem, project_id, "write"):
-                                try:
-                                    supabase.table("story_bible").update({"parent_id": item["parent_entity_id"]}).eq("id", item["entity_id"]).execute()
-                                    st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
-                                    pending.pop(i)
-                                    st.session_state["relation_suggestions"] = pending
-                                    st.success("Đã đặt parent.")
-                                    st.rerun()
-                                except Exception as ex:
-                                    st.error(f"Lỗi: {ex}")
-                            else:
-                                st.warning("Chỉ Owner mới được sửa.")
-                    with c2:
-                        if st.button("❌ Hủy", key=f"parent_reject_{i}"):
-                            pending.pop(i)
-                            st.session_state["relation_suggestions"] = pending
-                            st.rerun()
-                    st.markdown("---")
 
     @st.fragment
     def _bible_search_fragment():
@@ -332,13 +246,14 @@ def render_bible_tab(project_id, persona):
             col_type, col_custom = st.columns([2, 3])
 
             with col_type:
-                entry_type_options = list(Config.get_prefixes())
+                entry_type_options = [p for p in Config.get_prefixes() if p != "[CHAT]"]
                 if "[OTHER]" not in entry_type_options:
                     entry_type_options = entry_type_options + ["[OTHER]"]
                 entry_type = st.selectbox(
                     "Entry Type",
                     entry_type_options,
-                    format_func=lambda x: x.replace("[", "").replace("]", "")
+                    format_func=lambda x: x.replace("[", "").replace("]", ""),
+                    help="[CHAT] chỉ tạo qua Auto Crystallize trong Chat, không add tay.",
                 )
 
             with col_custom:
@@ -380,54 +295,57 @@ def render_bible_tab(project_id, persona):
                 with col_save:
                     if st.form_submit_button("💾 Save Entry", type="primary"):
                         if name and description and entry_type:
-                            entity_name = f"{entry_type} {name}"
-                            vec = AIService.get_embedding(f"{entity_name}: {description}")
-                            if vec:
-                                user_id = getattr(st.session_state.get("user"), "id", None) or ""
-                                user_email = getattr(st.session_state.get("user"), "email", None) or ""
-                                can_write = check_permission(user_id, user_email, project_id, "write")
-                                can_request = check_permission(user_id, user_email, project_id, "request_write")
-                                payload = {
-                                    "entity_name": entity_name,
-                                    "description": description,
-                                    "embedding": vec,
-                                    "source_chapter": source_chap,
-                                }
-                                if parent_id_value is not None:
-                                    payload["parent_id"] = parent_id_value
-                                try:
-                                    payload["importance_bias"] = round((importance_bias + 5) / 10.0, 2)
-                                except Exception:
-                                    payload["importance_bias"] = 0.5
-                                try:
-                                    if can_write:
-                                        payload["story_id"] = project_id
-                                        supabase.table("story_bible").insert(payload).execute()
-                                        st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
-                                        st.success("Entry added!")
-                                        st.session_state['adding_bible_entry'] = False
-                                        st.rerun()
-                                    elif can_request:
-                                        pid = submit_pending_change(
-                                            story_id=project_id,
-                                            requested_by_email=user_email,
-                                            table_name="story_bible",
-                                            target_key={},
-                                            old_data={},
-                                            new_data=payload,
-                                        )
-                                        if pid:
-                                            st.toast("Đã gửi yêu cầu chỉnh sửa đến Owner.", icon="📤")
+                            if entry_type.strip().upper() == "[CHAT]":
+                                st.error("[CHAT] chỉ tạo qua Auto Crystallize trong Chat, không add tay.")
+                            else:
+                                entity_name = f"{entry_type} {name}"
+                                vec = AIService.get_embedding(f"{entity_name}: {description}")
+                                if vec:
+                                    user_id = getattr(st.session_state.get("user"), "id", None) or ""
+                                    user_email = getattr(st.session_state.get("user"), "email", None) or ""
+                                    can_write = check_permission(user_id, user_email, project_id, "write")
+                                    can_request = check_permission(user_id, user_email, project_id, "request_write")
+                                    payload = {
+                                        "entity_name": entity_name,
+                                        "description": description,
+                                        "embedding": vec,
+                                        "source_chapter": source_chap,
+                                    }
+                                    if parent_id_value is not None:
+                                        payload["parent_id"] = parent_id_value
+                                    try:
+                                        payload["importance_bias"] = round((importance_bias + 5) / 10.0, 2)
+                                    except Exception:
+                                        payload["importance_bias"] = 0.5
+                                    try:
+                                        if can_write:
+                                            payload["story_id"] = project_id
+                                            supabase.table("story_bible").insert(payload).execute()
+                                            st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                                            st.success("Entry added!")
                                             st.session_state['adding_bible_entry'] = False
                                             st.rerun()
+                                        elif can_request:
+                                            pid = submit_pending_change(
+                                                story_id=project_id,
+                                                requested_by_email=user_email,
+                                                table_name="story_bible",
+                                                target_key={},
+                                                old_data={},
+                                                new_data=payload,
+                                            )
+                                            if pid:
+                                                st.toast("Đã gửi yêu cầu chỉnh sửa đến Owner.", icon="📤")
+                                                st.session_state['adding_bible_entry'] = False
+                                                st.rerun()
+                                            else:
+                                                st.error("Không gửi được yêu cầu.")
                                         else:
-                                            st.error("Không gửi được yêu cầu.")
-                                    else:
-                                        st.warning("Bạn không có quyền thêm entry.")
-                                except Exception as e:
-                                    st.error(f"Lỗi: {e}")
-                            else:
-                                st.error("Failed to create embedding")
+                                            st.warning("Bạn không có quyền thêm entry.")
+                                    except Exception as e:
+                                        st.error(f"Lỗi: {e}")
+                                else:
+                                    st.error("Failed to create embedding")
                         else:
                             st.warning("Please fill all fields")
 
@@ -646,7 +564,12 @@ def render_bible_tab(project_id, persona):
                     edit_parent_options.append(o)
 
             with st.form("edit_bible_form"):
-                new_name = st.text_input("Entity Name", value=entry['entity_name'])
+                is_locked_prefix = _entry_has_locked_prefix(entry)
+                if is_locked_prefix:
+                    st.text_input("Entity Name (khóa - tiền tố RULE/CHAT mặc định)", value=entry['entity_name'], disabled=True, key="edit_name_locked")
+                    new_name = entry['entity_name']
+                else:
+                    new_name = st.text_input("Entity Name", value=entry['entity_name'], key="edit_name")
                 new_desc = st.text_area("Description", value=entry['description'], height=150)
                 cur_parent = entry.get("parent_id")
                 edit_parent_idx = next((i for i, o in enumerate(edit_parent_options) if o["id"] == cur_parent), 0)
@@ -749,76 +672,6 @@ def render_bible_tab(project_id, persona):
 
     else:
         st.info("No bible entries found. Add some to build your project's knowledge base!")
-
-    # --- Global Relationships management ---
-    st.markdown("---")
-    with st.expander("🔗 All Relationships", expanded=False):
-        try:
-            rel_res = supabase.table("entity_relations").select("*").eq("story_id", project_id).execute()
-            all_rels = rel_res.data if rel_res and rel_res.data else []
-        except Exception as e:
-            st.error(f"Lỗi khi tải quan hệ: {e}")
-            all_rels = []
-
-        if not all_rels:
-            st.info("Chưa có quan hệ nào trong Bible.")
-        else:
-            id_to_name_all = {e["id"]: e.get("entity_name", "") for e in bible_data_all}
-            rows = []
-            for r in all_rels:
-                src_id = r.get("entity_id") or r.get("source_entity_id") or r.get("from_entity_id")
-                tgt_id = r.get("target_entity_id") or r.get("to_entity_id")
-                rtype = r.get("relation_type") or r.get("relation") or "—"
-                rows.append(
-                    {
-                        "ID": r.get("id"),
-                        "Source": id_to_name_all.get(src_id, f"ID {src_id}"),
-                        "Target": id_to_name_all.get(tgt_id, f"ID {tgt_id}"),
-                        "Type": rtype,
-                    }
-                )
-            if rows:
-                df_rels = pd.DataFrame(rows)
-                st.dataframe(df_rels, use_container_width=True, hide_index=True)
-
-            user_id = getattr(st.session_state.get("user"), "id", None) or ""
-            user_email = getattr(st.session_state.get("user"), "email", None) or ""
-            can_delete = check_permission(user_id, user_email, project_id, "delete")
-
-            if not can_delete:
-                st.caption("Bạn chỉ có quyền xem. Liên hệ Owner nếu muốn chỉnh sửa hoặc xóa quan hệ.")
-            else:
-                sel_ids = st.multiselect(
-                    "Chọn quan hệ để xóa",
-                    options=[row["ID"] for row in rows],
-                    format_func=lambda rid: f"Relation #{rid}",
-                    key="rel_multi_select",
-                )
-                col_del_rel, col_clear_rel = st.columns(2)
-                with col_del_rel:
-                    if sel_ids and st.button("🗑️ Xóa quan hệ đã chọn", use_container_width=True, key="rel_delete_selected"):
-                        try:
-                            supabase.table("entity_relations").delete().in_("id", sel_ids).execute()
-                            st.success(f"Đã xóa {len(sel_ids)} quan hệ.")
-                            invalidate_cache_and_rerun()
-                        except Exception as ex:
-                            st.error(f"Lỗi xóa: {ex}")
-                with col_clear_rel:
-                    confirm_clear_rel = st.checkbox(
-                        "Tôi chắc chắn muốn xóa TẤT CẢ quan hệ",
-                        key="rel_confirm_clear_all",
-                    )
-                    if st.button("💣 Xóa sạch tất cả quan hệ", type="secondary", use_container_width=True, key="rel_clear_all"):
-                        if not confirm_clear_rel:
-                            st.warning("Vui lòng tick xác nhận trước khi xóa toàn bộ quan hệ.")
-                        else:
-                            try:
-                                supabase.table("entity_relations").delete().eq("story_id", project_id).execute()
-                                st.success("Đã xóa sạch tất cả quan hệ.")
-                                st.session_state["rel_confirm_clear_all"] = False
-                                invalidate_cache_and_rerun()
-                            except Exception as ex:
-                                st.error(f"Lỗi xóa: {ex}")
 
     st.markdown("---")
     with st.expander("💀 Danger Zone", expanded=False):

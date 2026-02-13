@@ -1,6 +1,7 @@
 # ai_engine.py - AI Service, Router, Context, Rule Mining
 import json
 import re
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -234,8 +235,13 @@ class HybridSearch:
     """Hệ thống tìm kiếm kết hợp vector và từ khóa (V5: re-ranking, lookup_count, last_lookup_at)"""
 
     @staticmethod
-    def smart_search_hybrid_raw(query_text: str, project_id: str, top_k: int = 10) -> List[Dict]:
-        """Tìm kiếm hybrid trả về raw data; select thêm lookup_count, last_lookup_at, importance_bias; re-rank trong Python."""
+    def smart_search_hybrid_raw(
+        query_text: str,
+        project_id: str,
+        top_k: int = 10,
+        inferred_prefixes: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Tìm kiếm hybrid trả về raw data; re-rank trong Python. Nếu inferred_prefixes có giá trị thì dùng prefix-aware rerank."""
         try:
             services = init_services()
             supabase = services["supabase"]
@@ -282,7 +288,10 @@ class HybridSearch:
             if not raw_list:
                 return []
 
-            reranked = _rerank_by_score(raw_list, top_k)
+            if inferred_prefixes:
+                reranked = _rerank_by_score_with_prefix(raw_list, top_k, inferred_prefixes)
+            else:
+                reranked = _rerank_by_score(raw_list, top_k)
             return reranked
 
         except Exception as e:
@@ -449,7 +458,7 @@ def search_chunks_vector(
     arc_id: Optional[str] = None,
     top_k: int = 10,
 ) -> List[Dict]:
-    """Tìm chunks theo vector (nếu có embedding) hoặc text fallback. Trả về list chunk rows."""
+    """Tìm chunks theo vector (nếu có embedding) hoặc text fallback. Trả về list chunk rows. Nếu có arc_id mà không có kết quả thì thử lại không lọc arc."""
     try:
         services = init_services()
         if not services:
@@ -468,13 +477,19 @@ def search_chunks_vector(
                     "match_threshold": 0.3,
                     "match_count": top_k,
                 }).execute()
-                return list(r.data) if r.data else []
+                rows = list(r.data) if r.data else []
+                if arc_id and not rows and query_text and query_text.strip():
+                    rows = search_chunks_vector(query_text, project_id, arc_id=None, top_k=top_k)
+                return rows
             except Exception:
                 pass
         if query_text and query_text.strip():
             pattern = "%" + str(query_text).strip() + "%"
             r = q.ilike("content", pattern).limit(top_k).execute()
-            return list(r.data) if r.data else []
+            rows = list(r.data) if r.data else []
+            if arc_id and not rows:
+                rows = search_chunks_vector(query_text, project_id, arc_id=None, top_k=top_k)
+            return rows
         return []
     except Exception as e:
         print(f"search_chunks_vector error: {e}")
@@ -515,21 +530,90 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-# Legacy map (unused here, kept if other code references)
-_PREFIX_TO_LABEL = {
-    "[CHARACTER]": "CHARACTERS",
-    "[RULE]": "RULES",
-    "[LOCATION]": "LOCATIONS",
-    "[ITEM]": "ITEMS",
-    "[CONCEPT]": "CONCEPTS",
-    "[EVENT]": "EVENTS",
-    "[SYSTEM]": "SYSTEMS",
-    "[LORE]": "LORE",
-    "[TECH]": "SKILLS",
-    "[META]": "META",
-    "[CHAT]": "CHAT",
-    "[MERGED]": "MERGED",
-}
+# Trọng số khi re-rank có prefix: vector 0.55, recency 0.1, bias 0.2, prefix 0.15
+PREFIX_WEIGHT = 0.15
+VECTOR_WEIGHT_WITH_PREFIX = 0.55
+RECENCY_WEIGHT_UNCHANGED = 0.1
+IMPORTANCE_WEIGHT_UNCHANGED = 0.2
+
+
+def get_prefix_key_from_entity_name(entity_name: str) -> str:
+    """Lấy prefix_key (viết HOA, không ngoặc) từ entity_name. VD: '[CHARACTER] John' -> 'CHARACTER'."""
+    if not entity_name or not isinstance(entity_name, str):
+        return "OTHER"
+    prefix, _ = extract_prefix(entity_name.strip())
+    return (prefix or "OTHER").strip().upper().replace(" ", "_") or "OTHER"
+
+
+def _rerank_by_score_with_prefix(
+    rows: List[Dict],
+    top_k: int,
+    inferred_prefixes: Optional[List[str]] = None,
+) -> List[Dict]:
+    """Re-rank với bonus cho entry có prefix nằm trong inferred_prefixes. Dùng khi Router trả về inferred_prefixes."""
+    if not inferred_prefixes:
+        return _rerank_by_score(rows, top_k)
+    normalized_inferred = {str(p).strip().upper().replace(" ", "_") for p in inferred_prefixes if p}
+    for item in rows:
+        vector_sim = _safe_float(item.get("similarity") or item.get("score"), 0.5)
+        vector_sim = max(0.0, min(1.0, vector_sim))
+        recency = _recency_bonus(item.get("last_lookup_at"))
+        importance = _safe_float(item.get("importance_bias"), 0.5)
+        importance = max(0.0, min(1.0, importance))
+        pk = get_prefix_key_from_entity_name(item.get("entity_name") or "")
+        prefix_bonus = 1.0 if pk in normalized_inferred else 0.0
+        item["_final_score"] = (
+            (vector_sim * VECTOR_WEIGHT_WITH_PREFIX)
+            + (recency * RECENCY_WEIGHT_UNCHANGED)
+            + (importance * IMPORTANCE_WEIGHT_UNCHANGED)
+            + (prefix_bonus * PREFIX_WEIGHT)
+        )
+    sorted_rows = sorted(rows, key=lambda x: x.get("_final_score", 0.0), reverse=True)
+    for item in sorted_rows:
+        item.pop("_final_score", None)
+    return sorted_rows[:top_k]
+
+
+def _get_prefix_section_order_and_labels() -> Tuple[List[str], Dict[str, str]]:
+    """Lấy thứ tự và nhãn section từ DB (Config.get_prefix_setup()). Trả về (order, label_map)."""
+    setup = Config.get_prefix_setup()
+    order = []
+    labels: Dict[str, str] = {}
+    for p in setup:
+        pk = (p.get("prefix_key") or "").strip().upper().replace(" ", "_")
+        if pk:
+            order.append(pk)
+            labels[pk] = pk
+    return order, labels
+
+
+def format_bible_context_by_sections(raw_list: List[Dict]) -> str:
+    """Gom kết quả Bible theo section theo prefix; thứ tự và nhãn lấy từ DB (get_prefix_setup)."""
+    if not raw_list:
+        return ""
+    grouped: Dict[str, List[Dict]] = defaultdict(list)
+    for item in raw_list:
+        pk = get_prefix_key_from_entity_name(item.get("entity_name") or "")
+        grouped[pk].append(item)
+    order, labels = _get_prefix_section_order_and_labels()
+    seen = set(order)
+    for pk in grouped:
+        if pk not in seen:
+            order.append(pk)
+            if pk not in labels:
+                labels[pk] = pk
+    sections = []
+    for pk in order:
+        items = grouped.get(pk, [])
+        if not items:
+            continue
+        label = labels.get(pk, pk)
+        block = "\n".join(
+            f"- [{e.get('entity_name', '')}]: {e.get('description', '')}"
+            for e in items
+        )
+        sections.append(f"\n--- {label} ---\n{block}")
+    return "\n".join(sections).strip()
 
 
 def get_bible_index(story_id: str, max_tokens: int = 2000) -> str:
@@ -746,8 +830,10 @@ class SmartAIRouter:
                 prefix_setup_str = "\n".join(
                     f"- [{p.get('prefix_key', '')}]: {p.get('description', '')}" for p in prefix_setup
                 )
+            else:
+                prefix_setup_str = "(Chưa cấu hình loại thực thể trong Bible Prefix / bảng bible_prefix_config.)"
         except Exception:
-            prefix_setup_str = "- [RULE]: Quy tắc, luật lệ.\n- [CHAT]: Điểm nhớ từ hội thoại."
+            prefix_setup_str = "(Chưa cấu hình loại thực thể trong Bible Prefix.)"
 
         router_prompt = f"""
         Đóng vai Điều Phối Viên Dự Án (Project Coordinator).
@@ -761,7 +847,7 @@ class SmartAIRouter:
         DANH SÁCH THỰC THỂ TRONG STORY BIBLE (mỗi dòng: Entity: [LOẠI] Tên):
         {bible_index if bible_index else "(Chưa có dữ liệu)"}
 
-        YÊU CẦU ĐIỀU HƯỚNG: Dựa vào bảng mô tả các loại thực thể trên. Nếu user hỏi về một thực thể có loại tương ứng với mô tả, hãy dùng tool search_bible (hoặc get_entity_relations). Nếu không phân loại được, hãy coi là Other nhưng vẫn ưu tiên search_bible nếu đó là tên riêng. Chỉ ưu tiên search_chapters khi user hỏi rõ về diễn biến, sự kiện theo thời gian hoặc nội dung chương cụ thể.
+        YÊU CẦU ĐIỀU HƯỚNG: Dựa vào bảng mô tả các loại thực thể. Nếu user hỏi về thực thể (nhân vật, địa điểm...) -> search_bible. Nếu user hỏi theo từng đoạn, từng phần, nội dung chi tiết trong chương/file đã chunk (Data Analyze / Excel/Word chunk) -> search_chunks. Nếu user hỏi diễn biến, sự kiện theo thời gian hoặc nội dung chương đầy đủ -> read_full_content hoặc chapter_range. Chỉ ưu tiên search_chapters khi user hỏi rõ về diễn biến, sự kiện theo thời gian hoặc nội dung chương cụ thể.
 
         LỊCH SỬ CHAT:
         {chat_history_text}
@@ -773,10 +859,12 @@ class SmartAIRouter:
         PHÂN LOẠI INTENT:
         1. "numerical_calculation": User hỏi về SỐ LIỆU, tính toán, thống kê (tổng, trung bình, đếm, %, doanh thu, chi phí...) -> Ưu tiên Python Executor với Pandas/NumPy.
         2. "read_full_content": User muốn Sửa, Review, Viết tiếp, Kiểm tra code/văn, hoặc nhắc đến tên file cụ thể -> Cần đọc NGUYÊN VĂN FILE.
-        3. "search_chunks": User hỏi thông tin chi tiết từ Excel/Word đã chunk, dữ liệu theo dòng/semantic -> Tra chunks (vector + reverse lookup chapter/arc).
+        3. "search_chunks": User hỏi thông tin chi tiết theo từng đoạn/phần; dữ liệu đã chunk (Excel theo dòng, Word/theo chương từ Data Analyze); cần trích đoạn cụ thể, nội dung từng phần, hoặc tìm trong các chunk đã vector hóa -> Tra chunks (vector + reverse lookup chapter/arc). Ưu tiên search_chunks khi câu hỏi cần trích đoạn cụ thể hoặc dữ liệu đã được chunk.
         4. "search_bible": User hỏi thông tin chung, Lore, cốt truyện, quy định, khái niệm, hoặc nhắc tên nhân vật/thực thể có trong danh sách Bible trên -> Tra cứu Bible (search_bible / get_entity_relations).
         5. "chat_casual": Chào hỏi, khen chê, nói chuyện phiếm không cần dữ liệu dự án.
         6. "mixed_context": Cần cả nội dung file VÀ kiến thức Bible.
+
+        inferred_prefixes: Khi intent là search_bible hoặc mixed_context, điền mảng prefix_key (từ BẢNG MÔ TẢ trên) tương ứng loại thực thể user đang hỏi. VD: hỏi nhân vật -> ["CHARACTER"]; hỏi địa điểm -> ["LOCATION"]; hỏi lore + nhân vật -> ["LORE", "CHARACTER"]. Viết HOA, không ngoặc. Nếu không xác định được -> [].
 
         NHẬN DIỆN PHẠM VI CHƯƠNG (chapter_range):
         - Nếu user nói "chương đầu", "mấy chương đầu", "đầu truyện" -> đặt "chapter_range_mode": "first", "chapter_range_count": 5 (hoặc số user nói nếu rõ).
@@ -789,6 +877,7 @@ class SmartAIRouter:
             "intent": "numerical_calculation" | "read_full_content" | "search_chunks" | "search_bible" | "chat_casual" | "mixed_context",
             "target_files": ["tên file 1", "tên file 2"],
             "target_bible_entities": ["tên thực thể 1", "tên thực thể 2"],
+            "inferred_prefixes": ["CHARACTER", "LOCATION"],
             "reason": "Lý do ngắn gọn bằng tiếng Việt",
             "rewritten_query": "Viết lại câu hỏi của user cho rõ nghĩa hơn để search database",
             "chapter_range": [start, end] hoặc null,
@@ -818,10 +907,20 @@ class SmartAIRouter:
 
             result.setdefault("target_files", [])
             result.setdefault("target_bible_entities", [])
+            result.setdefault("inferred_prefixes", [])
             result.setdefault("rewritten_query", user_prompt)
             result.setdefault("chapter_range", None)
             result.setdefault("chapter_range_mode", None)
             result.setdefault("chapter_range_count", 5)
+            if not isinstance(result.get("inferred_prefixes"), list):
+                result["inferred_prefixes"] = []
+            # Chỉ giữ inferred_prefixes có trong DB (get_valid_prefix_keys)
+            valid_keys = Config.get_valid_prefix_keys()
+            if valid_keys:
+                result["inferred_prefixes"] = [
+                    p for p in result["inferred_prefixes"]
+                    if p and str(p).strip().upper().replace(" ", "_") in valid_keys
+                ]
 
             return result
 
@@ -831,6 +930,7 @@ class SmartAIRouter:
                 "intent": "chat_casual",
                 "target_files": [],
                 "target_bible_entities": [],
+                "inferred_prefixes": [],
                 "reason": f"Router error: {e}",
                 "rewritten_query": user_prompt,
                 "chapter_range": None,
@@ -1215,14 +1315,19 @@ class ContextManager:
         elif intent == "search_chunks":
             # Chunk vector search + reverse lookup (chunk -> chapter -> arc)
             chunk_ids = []
+            query_for_chunk = (router_result.get("rewritten_query") or (router_result.get("target_files") or [""])[0] or "").strip()
             chunk_rows = search_chunks_vector(
-                router_result.get("rewritten_query") or router_result.get("target_files", [""])[0] or "",
+                query_for_chunk or "nội dung",
                 project_id,
                 arc_id=current_arc_id,
                 top_k=8,
             )
             if chunk_rows:
                 chunk_ids = [str(c.get("id")) for c in chunk_rows if c.get("id")]
+            if not chunk_ids and current_arc_id and query_for_chunk:
+                chunk_rows = search_chunks_vector(query_for_chunk, project_id, arc_id=None, top_k=8)
+                if chunk_rows:
+                    chunk_ids = [str(c.get("id")) for c in chunk_rows if c.get("id")]
             if chunk_ids and ReverseLookupAssembler:
                 chunk_ctx, chunk_sources, chunk_tokens = ContextManager.build_context_with_chunk_reverse_lookup(
                     project_id, chunk_ids, current_arc_id, token_limit=8000
@@ -1237,32 +1342,16 @@ class ContextManager:
                 intent = "search_bible"
 
         if intent == "search_bible" or intent == "mixed_context":
+            raw_inferred = router_result.get("inferred_prefixes") or []
+            valid_keys = Config.get_valid_prefix_keys()
+            inferred_prefixes = [
+                p for p in raw_inferred
+                if p and str(p).strip().upper().replace(" ", "_") in valid_keys
+            ] if valid_keys else raw_inferred
             bible_context = ""
             for entity in target_bible_entities:
-                raw_list = HybridSearch.smart_search_hybrid_raw(entity, project_id, top_k=2)
-                if raw_list:
-                    for item in raw_list:
-                        try:
-                            eid = item.get("id")
-                            if eid is not None:
-                                HybridSearch.update_lookup_stats(eid)
-                        except Exception:
-                            pass
-                    main_id = raw_list[0].get("id") if raw_list else None
-                    rel_block = ""
-                    if main_id:
-                        rel_text = ContextManager.get_entity_relations(main_id, project_id)
-                        if rel_text:
-                            rel_block = f"> [RELATION]:\n{rel_text}\n\n"
-                    part = "\n".join(
-                        f"- [{item.get('entity_name', '')}]: {item.get('description', '')}"
-                        for item in raw_list
-                    )
-                    bible_context += f"\n--- {entity.upper()} ---\n{rel_block}{part}\n"
-
-            if not bible_context and router_result.get("rewritten_query"):
                 raw_list = HybridSearch.smart_search_hybrid_raw(
-                    router_result["rewritten_query"], project_id, top_k=5
+                    entity, project_id, top_k=2, inferred_prefixes=inferred_prefixes
                 )
                 if raw_list:
                     for item in raw_list:
@@ -1278,10 +1367,31 @@ class ContextManager:
                         rel_text = ContextManager.get_entity_relations(main_id, project_id)
                         if rel_text:
                             rel_block = f"> [RELATION]:\n{rel_text}\n\n"
-                    part = "\n".join(
-                        f"- [{item.get('entity_name', '')}]: {item.get('description', '')}"
-                        for item in raw_list
-                    )
+                    part = format_bible_context_by_sections(raw_list)
+                    bible_context += f"\n--- {entity.upper()} ---\n{rel_block}{part}\n"
+
+            if not bible_context and router_result.get("rewritten_query"):
+                raw_list = HybridSearch.smart_search_hybrid_raw(
+                    router_result["rewritten_query"],
+                    project_id,
+                    top_k=5,
+                    inferred_prefixes=inferred_prefixes,
+                )
+                if raw_list:
+                    for item in raw_list:
+                        try:
+                            eid = item.get("id")
+                            if eid is not None:
+                                HybridSearch.update_lookup_stats(eid)
+                        except Exception:
+                            pass
+                    main_id = raw_list[0].get("id") if raw_list else None
+                    rel_block = ""
+                    if main_id:
+                        rel_text = ContextManager.get_entity_relations(main_id, project_id)
+                        if rel_text:
+                            rel_block = f"> [RELATION]:\n{rel_text}\n\n"
+                    part = format_bible_context_by_sections(raw_list)
                     bible_context = f"\n--- KNOWLEDGE BASE ---\n{rel_block}{part}\n"
 
             if bible_context:
@@ -1353,7 +1463,7 @@ def suggest_import_category(text: str) -> str:
         model = getattr(Config, "METADATA_MODEL", None) or "google/gemini-2.5-flash"
         prefixes = Config.get_prefixes()
         if not prefixes:
-            prefixes = list(getattr(Config, "BIBLE_PREFIXES", ["[RULE]", "[CHARACTER]", "[LOCATION]", "[ITEM]", "[OTHER]"]))
+            return "[OTHER]"
         if "[OTHER]" not in prefixes:
             prefixes = list(prefixes) + ["[OTHER]"]
         prompt = f"""Phân loại nội dung sau vào ĐÚNG MỘT trong các loại (chỉ trả về chuỗi loại, không giải thích):

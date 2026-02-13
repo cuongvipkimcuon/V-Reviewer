@@ -22,6 +22,7 @@ def render_prefix_setup():
         st.warning(f"Bảng bible_prefix_config chưa tồn tại hoặc lỗi: {e}. Chạy schema_prefix_persona.sql trong Supabase.")
         return
     personas_list = PersonaSystem.get_available_personas()
+    _system_keys = getattr(Config, "PREFIX_SPECIAL_SYSTEM", None) or ()
     for row in rows:
         prefix_key = (row.get("prefix_key") or "").strip().upper()
         with st.expander(f"[{row.get('prefix_key', '')}] {row.get('description', '')[:50]}..."):
@@ -29,7 +30,7 @@ def render_prefix_setup():
             st.text_area("Mô tả", value=row.get("description", ""), key=f"desc_{row.get('id')}", height=80)
             st.number_input("Thứ tự", value=int(row.get("sort_order") or 0), key=f"ord_{row.get('id')}", min_value=0)
             persona_val = None
-            if prefix_key not in ("RULE", "CHAT", "OTHER"):
+            if prefix_key not in _system_keys:
                 cur_pk = row.get("persona_key") or ""
                 idx = personas_list.index(cur_pk) + 1 if cur_pk in personas_list else 0
                 persona_sel = st.selectbox("Persona (Extract dùng)", ["(Không)"] + personas_list, index=idx, key=f"persona_{row.get('id')}")
@@ -42,7 +43,7 @@ def render_prefix_setup():
                             "description": st.session_state.get(f"desc_{row.get('id')}", row.get("description")),
                             "sort_order": st.session_state.get(f"ord_{row.get('id')}", row.get("sort_order")),
                         }
-                        if prefix_key not in ("RULE", "CHAT", "OTHER"):
+                        if prefix_key not in _system_keys:
                             pk = st.session_state.get(f"persona_{row.get('id')}", "(Không)")
                             upd["persona_key"] = None if pk == "(Không)" else pk
                         supabase.table("bible_prefix_config").update(upd).eq("id", row["id"]).execute()
@@ -51,9 +52,9 @@ def render_prefix_setup():
                     except Exception as ex:
                         st.error(str(ex))
             with col_del:
-                # Không cho phép xóa hai tiền tố hệ thống: RULE và CHAT
-                if prefix_key in ("RULE", "CHAT"):
-                    st.info("Tiền tố hệ thống (RULE/CHAT) không thể xóa.")
+                _locked_delete = [k for k in _system_keys if k != "OTHER"]
+                if prefix_key in _locked_delete:
+                    st.info("Tiền tố hệ thống không thể xóa.")
                 else:
                     if st.button("🗑️ Xóa tiền tố này", key=f"del_{row.get('id')}"):
                         try:
