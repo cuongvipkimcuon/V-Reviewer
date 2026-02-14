@@ -1,5 +1,5 @@
-# core/background_jobs.py - Tác vụ chạy ngầm (Data Analyze + Chat). Tab "Tác vụ ngầm" hiển thị trạng thái & kết quả.
-"""Tạo job, cập nhật trạng thái, list job. Worker chạy trong thread; khi xong ghi tin vào chat_history để V Work vẫn có thông báo."""
+# core/background_jobs.py - Background jobs (Data Analyze + Chat). "Background Jobs" tab shows status.
+"""Create/update/list jobs. Workers run in thread; completion is not posted to chat (see Background Jobs tab)."""
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -160,7 +160,6 @@ def _worker_data_analyze_bible(
 ) -> None:
     from config import Config
     from persona import PersonaSystem
-    from ai_engine import AIService
     from views.data_analyze import _run_extract_on_content, _get_existing_bible_entity_names_for_chapter
 
     chap_num = int(payload.get("chapter_number", 0))
@@ -208,20 +207,15 @@ def _worker_data_analyze_bible(
         if post_to_chat:
             _post_completion_to_chat(project_id, user_id, label, True, "Không có mục nào hợp lệ.", None)
         return
-    texts = [r["description"] for r in rows_to_save]
-    vectors = AIService.get_embeddings_batch(texts)
     count = 0
-    for i, row in enumerate(rows_to_save):
-        vec = vectors[i] if i < len(vectors) else None
-        if vec:
-            supabase.table("story_bible").insert({
-                "story_id": project_id,
-                "entity_name": row["final_name"],
-                "description": row["description"],
-                "embedding": vec,
-                "source_chapter": chap_num,
-            }).execute()
-            count += 1
+    for row in rows_to_save:
+        supabase.table("story_bible").insert({
+            "story_id": project_id,
+            "entity_name": row["final_name"],
+            "description": row["description"],
+            "source_chapter": chap_num,
+        }).execute()
+        count += 1
     summary = f"Đã lưu {count} mục Bible."
     update_job(job_id, "completed", result_summary=summary)
     if post_to_chat:
@@ -340,7 +334,7 @@ def _worker_data_analyze_timeline(
 def _worker_data_analyze_chunk(
     job_id: str, project_id: str, user_id: Optional[str], label: str, payload: Dict, post_to_chat: bool, supabase,
 ) -> None:
-    from ai_engine import AIService, analyze_split_strategy, execute_split_logic
+    from ai_engine import analyze_split_strategy, execute_split_logic
 
     chap_num = int(payload.get("chapter_number", 0))
     ch_row = supabase.table("chapters").select("id, content, arc_id").eq("story_id", project_id).eq("chapter_number", chap_num).limit(1).execute()
@@ -367,13 +361,10 @@ def _worker_data_analyze_chunk(
         ids = [r["id"] for r in old.data if r.get("id")]
         if ids:
             supabase.table("chunks").delete().in_("id", ids).execute()
-    texts_to_embed = [chk.get("content", "").strip() for chk in edited]
-    vectors = AIService.get_embeddings_batch(texts_to_embed) if texts_to_embed else []
     saved = 0
     for idx, chk in enumerate(edited):
         txt = chk.get("content", "").strip()
         if txt:
-            vec = vectors[idx] if idx < len(vectors) else None
             row = {
                 "story_id": project_id,
                 "chapter_id": chapter_id,
@@ -383,11 +374,59 @@ def _worker_data_analyze_chunk(
                 "meta_json": {"source": "data_analyze", "chapter": chap_num, "title": chk.get("title", "")},
                 "sort_order": chk.get("order", idx + 1),
             }
-            if vec:
-                row["embedding"] = vec
             supabase.table("chunks").insert(row).execute()
             saved += 1
     summary = f"Đã lưu {saved} chunks."
     update_job(job_id, "completed", result_summary=summary)
     if post_to_chat:
         _post_completion_to_chat(project_id, user_id, label, True, summary, None)
+
+
+def run_embedding_backfill(project_id: str, bible_limit: int = 50, chunks_limit: int = 50) -> Dict[str, int]:
+    """
+    Tìm story_bible và chunks có embedding null, gọi API embedding batch, cập nhật lại DB.
+    Trả về {"bible_updated": n, "chunks_updated": m}.
+    """
+    out = {"bible_updated": 0, "chunks_updated": 0}
+    if not project_id:
+        return out
+    try:
+        from config import init_services
+        from ai_engine import AIService
+        services = init_services()
+        if not services:
+            return out
+        supabase = services["supabase"]
+    except Exception:
+        return out
+    try:
+        r = supabase.table("story_bible").select("id, description").eq("story_id", project_id).is_("embedding", "NULL").limit(bible_limit).execute()
+        rows_bible = list(r.data or [])
+        if rows_bible:
+            texts_bible = [(row.get("description") or "").strip() or "" for row in rows_bible]
+            vectors_bible = AIService.get_embeddings_batch(texts_bible) if hasattr(AIService, "get_embeddings_batch") else []
+            for i, row in enumerate(rows_bible):
+                if i < len(vectors_bible) and vectors_bible[i]:
+                    try:
+                        supabase.table("story_bible").update({"embedding": vectors_bible[i]}).eq("id", row["id"]).execute()
+                        out["bible_updated"] += 1
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    try:
+        r = supabase.table("chunks").select("id, content").eq("story_id", project_id).is_("embedding", "NULL").limit(chunks_limit).execute()
+        rows_chunks = list(r.data or [])
+        if rows_chunks:
+            texts_chunks = [(row.get("content") or "").strip() or "" for row in rows_chunks]
+            vectors_chunks = AIService.get_embeddings_batch(texts_chunks) if hasattr(AIService, "get_embeddings_batch") else []
+            for i, row in enumerate(rows_chunks):
+                if i < len(vectors_chunks) and vectors_chunks[i]:
+                    try:
+                        supabase.table("chunks").update({"embedding": vectors_chunks[i]}).eq("id", row["id"]).execute()
+                        out["chunks_updated"] += 1
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return out

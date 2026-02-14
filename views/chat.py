@@ -121,7 +121,7 @@ def _start_data_operation_background(
         desc = f"{op} {t} chương {ch}."
     else:
         return
-    running_msg = f"⏳ Đang chạy ngầm: **{user_request[:100]}**. {desc} Kết quả sẽ hiện trong chat V Work."
+    running_msg = f"⏳ Running in background: **{user_request[:100]}**. {desc} Check **Background Jobs** tab for status."
     try:
         services = init_services()
         if not services:
@@ -172,10 +172,11 @@ def _start_data_operation_background(
                     "target": single_op.get("target", "bible"),
                     "chapter_number": single_op.get("chapter_number"),
                     "user_request": user_request,
+                    "post_completion_message": False,
                 },
                 daemon=True,
             ).start()
-        st.toast("Đã bắt đầu chạy ngầm. Kết quả sẽ hiện trong chat V Work.")
+        st.toast("Started in background. Check Background Jobs tab for status.")
         if rerun_after:
             st.rerun()
     except Exception as e:
@@ -474,15 +475,6 @@ def render_chat_tab(project_id, persona, chat_mode=None):
                         if m.get("metadata"):
                             with st.expander("📊 Details"):
                                 st.json(m["metadata"], expanded=False)
-                # Popup nhắc khi có tin hoàn thành thao tác dữ liệu (job chạy ngầm vừa xong)
-                last_msg = visible_msgs[-1] if visible_msgs else None
-                if last_msg and last_msg.get("role") == "model":
-                    meta = last_msg.get("metadata") or {}
-                    if meta.get("data_operation_completion") or meta.get("data_operation_batch_completion"):
-                        last_at = last_msg.get("created_at") or ""
-                        if last_at != st.session_state.get("_last_data_op_completion_at"):
-                            st.session_state["_last_data_op_completion_at"] = last_at
-                            st.toast("Thao tác dữ liệu đã hoàn thành. Xem tin nhắn trên.", icon="✅")
             except Exception as e:
                 st.error(f"Error loading history: {e}")
         history_depth = st.session_state.get("history_depth", 5)

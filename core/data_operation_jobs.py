@@ -298,7 +298,7 @@ def run_data_operations_batch(
 ) -> None:
     """
     Chạy thao tác (extract/update/delete × bible/relation/timeline/chunking) theo LÔ.
-    Nếu job_id được truyền (từ Chat), cập nhật background_jobs để tab Tác vụ ngầm hiển thị.
+    If job_id is passed (from Chat), updates background_jobs for the Background Jobs tab.
     Vẫn ghi tin hoàn thành vào chat_history để V Work hiện toast.
     """
     if not steps:
@@ -370,13 +370,6 @@ def run_data_operations_batch(
             except Exception:
                 pass
         return
-    supabase = services["supabase"]
-    now_iso = datetime.now(tz=timezone.utc).isoformat()
-    now_display = datetime.now().strftime("%d/%m/%Y %H:%M")
-    if not all_failed:
-        content = f"✅ Đã thực hiện xong **tất cả {total_ops} thao tác** của bạn: **{user_request}**. Thời gian: {now_display}."
-    else:
-        content = f"⚠️ Hoàn thành một phần. **{user_request}**. Lỗi: {'; '.join(all_failed[:3])}. Thời gian: {now_display}."
     if job_id:
         try:
             from core.background_jobs import update_job
@@ -389,17 +382,6 @@ def run_data_operations_batch(
             )
         except Exception:
             pass
-    try:
-        supabase.table("chat_history").insert({
-            "story_id": project_id,
-            "user_id": str(user_id) if user_id else None,
-            "role": "model",
-            "content": content,
-            "created_at": now_iso,
-            "metadata": {"data_operation_batch_completion": True, "total_ops": total_ops, "failed_count": len(all_failed)},
-        }).execute()
-    except Exception:
-        pass
 
 
 def _do_delete(supabase, project_id: str, target: str, chapter_number: int, chapter_id):
@@ -437,7 +419,6 @@ def _get_entity_ids_for_chapter(supabase, project_id: str, chap_num: int):
 
 def _do_extract_bible(supabase, project_id: str, chap_num: int, content: str):
     from views.data_analyze import _run_extract_on_content
-    from ai_engine import AIService
     from persona import PersonaSystem
     from config import Config
 
@@ -455,7 +436,6 @@ def _do_extract_bible(supabase, project_id: str, chap_num: int, content: str):
     items = _run_extract_on_content(content, ext_persona, project_id, chap_num, exclude_existing=False, supabase=supabase)
     if not items:
         return
-    texts = []
     rows_to_save = []
     for item in items:
         desc = (item.get("description") or "").strip()
@@ -465,20 +445,15 @@ def _do_extract_bible(supabase, project_id: str, chap_num: int, content: str):
         final_name = f"[{prefix_key}] {raw_name}" if not raw_name.startswith("[") else raw_name
         if desc:
             rows_to_save.append({"final_name": final_name, "description": desc})
-            texts.append(desc)
     if not rows_to_save:
         return
-    vectors = AIService.get_embeddings_batch(texts) if hasattr(AIService, "get_embeddings_batch") else []
-    for i, row in enumerate(rows_to_save):
-        vec = vectors[i] if i < len(vectors) else None
+    for row in rows_to_save:
         payload = {
             "story_id": project_id,
             "entity_name": row["final_name"],
             "description": row["description"],
             "source_chapter": chap_num,
         }
-        if vec:
-            payload["embedding"] = vec
         supabase.table("story_bible").insert(payload).execute()
 
 
@@ -536,7 +511,7 @@ def _do_extract_timeline(supabase, project_id: str, chapter_id, chapter_number: 
 
 
 def _do_extract_chunking(supabase, project_id: str, chapter_id, arc_id, chap_num: int, content: str):
-    from ai_engine import AIService, analyze_split_strategy, execute_split_logic
+    from ai_engine import analyze_split_strategy, execute_split_logic
 
     r = supabase.table("chunks").select("id").eq("story_id", project_id).eq("chapter_id", chapter_id).execute()
     ids = [x["id"] for x in (r.data or []) if x.get("id")]
@@ -547,13 +522,10 @@ def _do_extract_chunking(supabase, project_id: str, chapter_id, arc_id, chap_num
     if not chunks_list:
         chunks_list = execute_split_logic(content, "by_length", "2000")
     edited = [{"title": c.get("title", ""), "content": (c.get("content") or "").strip(), "order": c.get("order", i + 1)} for i, c in enumerate(chunks_list or [])]
-    texts_to_embed = [chk.get("content", "").strip() for chk in edited if chk.get("content")]
-    vectors = AIService.get_embeddings_batch(texts_to_embed) if texts_to_embed and hasattr(AIService, "get_embeddings_batch") else []
     for idx, chk in enumerate(edited):
         txt = chk.get("content", "").strip()
         if not txt:
             continue
-        vec = vectors[idx] if idx < len(vectors) else None
         payload = {
             "story_id": project_id,
             "chapter_id": chapter_id,
@@ -563,6 +535,4 @@ def _do_extract_chunking(supabase, project_id: str, chapter_id, arc_id, chap_num
             "meta_json": {"source": "data_operation_jobs", "chapter": chap_num, "title": chk.get("title", "")},
             "sort_order": chk.get("order", idx + 1),
         }
-        if vec:
-            payload["embedding"] = vec
         supabase.table("chunks").insert(payload).execute()

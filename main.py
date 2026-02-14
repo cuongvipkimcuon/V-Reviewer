@@ -71,7 +71,7 @@ TAB_STRUCTURE = {
         ("dashboard", "📊 Dashboard", "render_dashboard_tab", False),
         ("workstation", "✍️ Workstation", "render_workstation_tab", True),
         ("data_analyze", "📊 Data Analyze", "render_data_analyze_tab", False),
-        ("background_tasks", "🔄 Tác vụ ngầm", "render_background_tasks_tab", False),
+        ("background_tasks", "🔄 Background Jobs", "render_background_tasks_tab", False),
         ("review", "🤖 Review", "render_review_tab", False),
         ("python_executor", "🧮 Python Executor", "render_python_executor_tab", False),
     ],

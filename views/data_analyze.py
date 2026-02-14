@@ -198,11 +198,11 @@ def _render_timeline_section(project_id, content, chap_num, selected_row, supaba
                 job_type="data_analyze_timeline",
                 label=f"Timeline chương {chap_num}",
                 payload={"chapter_number": chap_num, "chapter_label": chapter_label},
-                post_to_chat=True,
+                post_to_chat=False,
             )
             if job_id:
                 threading.Thread(target=run_job_worker, args=(job_id,), daemon=True).start()
-                st.toast("Đã gửi vào hàng đợi. Xem tab Tác vụ ngầm. V Work sẽ thông báo khi xong.")
+                st.toast("Queued. Check Background Jobs tab for status.")
                 st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
                 st.rerun()
             else:
@@ -233,11 +233,11 @@ def _render_extract_bible_relations_chunking(project_id, content, chap_num, sele
                 job_type="data_analyze_bible",
                 label=f"Extract Bible chương {chap_num}",
                 payload={"chapter_number": chap_num, "persona_key": da_persona_key, "exclude_existing": False},
-                post_to_chat=True,
+                post_to_chat=False,
             )
             if job_id:
                 threading.Thread(target=run_job_worker, args=(job_id,), daemon=True).start()
-                st.toast("Đã gửi vào hàng đợi. Xem tab Tác vụ ngầm. V Work sẽ thông báo khi xong.")
+                st.toast("Queued. Check Background Jobs tab for status.")
                 st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
                 st.rerun()
             else:
@@ -250,11 +250,11 @@ def _render_extract_bible_relations_chunking(project_id, content, chap_num, sele
                 job_type="data_analyze_bible",
                 label=f"Extract Bible chương {chap_num} (chỉ mới)",
                 payload={"chapter_number": chap_num, "persona_key": da_persona_key, "exclude_existing": True},
-                post_to_chat=True,
+                post_to_chat=False,
             )
             if job_id:
                 threading.Thread(target=run_job_worker, args=(job_id,), daemon=True).start()
-                st.toast("Đã gửi vào hàng đợi. Xem tab Tác vụ ngầm. V Work sẽ thông báo khi xong.")
+                st.toast("Queued. Check Background Jobs tab for status.")
                 st.rerun()
             else:
                 st.error("Không tạo được job.")
@@ -264,7 +264,7 @@ def _render_extract_bible_relations_chunking(project_id, content, chap_num, sele
     # --- Section 2: Relation ---
     st.markdown("---")
     st.subheader("🔗 Relation")
-    st.info("💡 Nên thực hiện Extract Bible trước để gợi ý relation chính xác. Tác vụ chạy ngầm; xem tab Tác vụ ngầm.")
+    st.info("💡 Run Extract Bible first for better relations. Jobs run in background; see Background Jobs tab.")
     st.checkbox(
         "⚠️ Tôi hiểu: Gợi ý quan hệ sẽ **xóa các quan hệ** giữa các thực thể thuộc chương này trước khi gợi ý lại.",
         key="da_confirm_delete_relation_chapter",
@@ -277,11 +277,11 @@ def _render_extract_bible_relations_chunking(project_id, content, chap_num, sele
                 job_type="data_analyze_relation",
                 label=f"Gợi ý quan hệ chương {chap_num}",
                 payload={"chapter_number": chap_num, "only_new": False},
-                post_to_chat=True,
+                post_to_chat=False,
             )
             if job_id:
                 threading.Thread(target=run_job_worker, args=(job_id,), daemon=True).start()
-                st.toast("Đã gửi vào hàng đợi. Xem tab Tác vụ ngầm. V Work sẽ thông báo khi xong.")
+                st.toast("Queued. Check Background Jobs tab for status.")
                 st.rerun()
             else:
                 st.error("Không tạo được job.")
@@ -293,11 +293,11 @@ def _render_extract_bible_relations_chunking(project_id, content, chap_num, sele
                 job_type="data_analyze_relation",
                 label=f"Cập nhật quan hệ chương {chap_num} (chỉ mới)",
                 payload={"chapter_number": chap_num, "only_new": True},
-                post_to_chat=True,
+                post_to_chat=False,
             )
             if job_id:
                 threading.Thread(target=run_job_worker, args=(job_id,), daemon=True).start()
-                st.toast("Đã gửi vào hàng đợi. Xem tab Tác vụ ngầm. V Work sẽ thông báo khi xong.")
+                st.toast("Queued. Check Background Jobs tab for status.")
                 st.rerun()
             else:
                 st.error("Không tạo được job.")
@@ -318,11 +318,11 @@ def _render_extract_bible_relations_chunking(project_id, content, chap_num, sele
                 job_type="data_analyze_chunk",
                 label=f"Phân tích Chunk chương {chap_num}",
                 payload={"chapter_number": chap_num},
-                post_to_chat=True,
+                post_to_chat=False,
             )
             if job_id:
                 threading.Thread(target=run_job_worker, args=(job_id,), daemon=True).start()
-                st.toast("Đã gửi vào hàng đợi. Xem tab Tác vụ ngầm. V Work sẽ thông báo khi xong.")
+                st.toast("Queued. Check Background Jobs tab for status.")
                 st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
                 st.rerun()
             else:
