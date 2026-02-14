@@ -20,8 +20,7 @@ def _call_extractor_llm(raw_content: str, extractor_prompt: str) -> Optional[str
     """Call LLM with extractor_prompt to normalize and extract. Returns LLM text or None."""
     try:
         from config import init_services
-        from ai_engine import AIService
-        from config import Config
+        from ai_engine import AIService, _get_default_tool_model
     except ImportError:
         return None
     if not extractor_prompt or not raw_content.strip():
@@ -45,7 +44,7 @@ Output only the normalized content, no explanation.""" % (
     try:
         resp = AIService.call_openrouter(
             messages=[{"role": "user", "content": prompt}],
-            model=getattr(Config, "METADATA_MODEL", None) or "google/gemini-2.5-flash",
+            model=_get_default_tool_model(),
             temperature=0.2,
             max_tokens=2000,
         )

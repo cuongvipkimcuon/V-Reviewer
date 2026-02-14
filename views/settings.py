@@ -40,7 +40,20 @@ def render_settings_tab():
         st.session_state["selected_model"] = selected
         st.session_state["temperature"] = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1, key="settings_temp")
         st.session_state["context_size"] = st.select_slider("Context Size", ["low", "medium", "high", "max"], "medium", key="settings_ctx")
-        st.success("Đã áp dụng. Các giá trị này dùng cho Chat và Workstation.")
+        st.caption("Model trên dùng cho Chat và Workstation.")
+        all_models_flat = [m for models in Config.AVAILABLE_MODELS.values() for m in models]
+        default_tool = st.session_state.get("default_ai_model", getattr(Config, "DEFAULT_TOOL_MODEL", Config.ROUTER_MODEL))
+        if default_tool not in all_models_flat:
+            default_tool = getattr(Config, "DEFAULT_TOOL_MODEL", Config.ROUTER_MODEL)
+        default_idx = all_models_flat.index(default_tool) if default_tool in all_models_flat else 0
+        st.session_state["default_ai_model"] = st.selectbox(
+            "Model mặc định (công cụ)",
+            all_models_flat,
+            index=default_idx,
+            key="settings_default_tool_model",
+            help="Dùng cho Numerical Executor (V7), Data Analyze (trích xuất), Python Executor. Mặc định DeepSeek.",
+        )
+        st.success("Đã áp dụng. Chat/Workstation dùng Model trên; công cụ dùng Model mặc định.")
 
     with tab3:
         st.subheader("⚙️ Cấu hình AI chi tiết")

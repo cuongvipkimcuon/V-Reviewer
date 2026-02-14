@@ -25,6 +25,7 @@ from views import (
     render_python_executor_tab,
     render_arc_tab,
     render_semantic_intent_tab,
+    render_timeline_tab,
 )
 
 # ==========================================
@@ -74,11 +75,13 @@ TAB_STRUCTURE = {
         ("rules", "📋 Rules", "render_rules_tab", True),
         ("chat_mgmt", "💬 Memory", "render_chat_management_tab", True),
         ("arc", "📐 Arc", "render_arc_tab", False),
+        ("timeline", "📅 Timeline", "render_timeline_tab", False),
         ("data_health", "🛡️ Data Health", "render_data_health_tab", False),
         ("semantic_intent", "🎯 Semantic Intent", "render_semantic_intent_tab", False),
     ],
     "chat": [
-        ("chat", "💬 Smart Chat", "render_chat_tab", True),
+        ("v_work", "🔧 V Work", "render_chat_tab", True),
+        ("v_home", "🏠 V Home", "render_chat_tab", False),
     ],
     "admin": [
         ("collaboration", "👥 Collaboration", "render_collaboration_tab", False),
@@ -99,6 +102,7 @@ RENDER_MAP = {
     "render_relations_tab": render_relations_tab,
     "render_chunking_tab": render_chunking_tab,
     "render_arc_tab": render_arc_tab,
+    "render_timeline_tab": render_timeline_tab,
     "render_data_health_tab": render_data_health_tab,
     "render_semantic_intent_tab": render_semantic_intent_tab,
     "render_chat_tab": render_chat_tab,
@@ -174,14 +178,22 @@ def main():
                         render_fn = RENDER_MAP.get(fn_name)
                         if render_fn:
                             try:
-                                if needs_persona:
+                                if sub_id in ("v_work", "v_home"):
+                                    render_fn(project_id, persona, sub_id)
+                                elif needs_persona:
                                     render_fn(project_id, persona)
                                 elif sub_id in ("cost", "settings"):
                                     render_fn()
                                 else:
                                     render_fn(project_id)
                             except TypeError:
-                                render_fn(project_id) if sub_id not in ("cost", "settings") else render_fn()
+                                if sub_id in ("v_work", "v_home"):
+                                    try:
+                                        render_fn(project_id, persona, sub_id)
+                                    except TypeError:
+                                        render_fn(project_id, persona)
+                                else:
+                                    render_fn(project_id) if sub_id not in ("cost", "settings") else render_fn()
 
     st.markdown("---")
     st.markdown(

@@ -15,6 +15,8 @@ from ai_engine import (
     analyze_split_strategy,
     execute_split_logic,
     suggest_relations,
+    extract_timeline_events_from_content,
+    _get_default_tool_model,
 )
 from utils.auth_manager import check_permission
 from utils.cache_helpers import get_chapters_cached, get_bible_list_cached, invalidate_cache_and_rerun
@@ -88,7 +90,7 @@ Nếu không tìm thấy: {{ "items": [] }}. Chỉ trả về JSON."""
         try:
             resp = AIService.call_openrouter(
                 messages=[{"role": "user", "content": ext_prompt}],
-                model=st.session_state.get("selected_model", Config.DEFAULT_MODEL),
+                model=_get_default_tool_model(),
                 temperature=0.0,
                 max_tokens=16000,
                 response_format={"type": "json_object"},
@@ -164,8 +166,111 @@ def render_data_analyze_tab(project_id):
         st.warning("Chương này chưa có nội dung. Thêm nội dung trong Workstation.")
         st.stop()
 
-    st.caption(f"Nội dung chương: {len(content)} ký tự. Các thao tác bên dưới thực hiện độc lập.")
+    st.caption(f"Nội dung chương: {len(content)} ký tự.")
 
+    _render_extract_bible_relations_chunking(
+        project_id, content, chap_num, selected_row, file_options, selected_file, supabase
+    )
+    _render_timeline_section(project_id, content, chap_num, selected_row, supabase)
+
+    st.session_state.setdefault("update_trigger", st.session_state.get("update_trigger", 0))
+
+
+def _render_timeline_section(project_id, content, chap_num, selected_row, supabase):
+    """Phần Timeline trong Data Analyze (dưới Chunking): cùng cơ chế Bắt đầu / Xóa hết / Cập nhật / Làm lại."""
+    st.markdown("---")
+    st.subheader("📅 Timeline (trích xuất từ chương)")
+    try:
+        supabase.table("timeline_events").select("id").limit(1).execute()
+    except Exception:
+        st.warning("Bảng timeline_events chưa tồn tại. Chạy schema_v7_migration.sql trên Supabase để dùng tính năng này.")
+        return
+    chapter_label = selected_row.get("title") or f"Chương {chap_num}"
+    st.caption(f"Chương đã chọn: {chapter_label}. AI trích xuất sự kiện (thứ tự, mốc thời gian, flashback). Lưu mới sẽ xóa timeline events đã gắn chương này.")
+
+    st.checkbox(
+        "⚠️ Tôi hiểu: Bắt đầu / Lưu Timeline sẽ **xóa toàn bộ** timeline_events đã gắn với chương này trước khi lưu mới.",
+        key="da_confirm_delete_timeline_chapter",
+    )
+
+    if st.button("🤖 AI trích xuất timeline từ chương này", type="primary", key="da_timeline_extract_btn"):
+        with st.spinner("Đang phân tích nội dung..."):
+            try:
+                events = extract_timeline_events_from_content(content, chapter_label)
+                st.session_state["da_timeline_extracted"] = events
+                st.session_state["da_timeline_chapter_num"] = chap_num
+                st.session_state["da_timeline_chapter_id"] = selected_row.get("id")
+                st.toast(f"Trích xuất được {len(events)} sự kiện.")
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+
+    if st.session_state.get("da_timeline_chapter_num") == chap_num and st.session_state.get("da_timeline_extracted") is not None:
+        events = st.session_state["da_timeline_extracted"]
+        if events:
+            st.success(f"✅ {len(events)} sự kiện (chỉnh sửa nếu cần rồi Lưu vào Timeline).")
+            for i, ev in enumerate(events):
+                with st.expander(f"#{ev.get('event_order', i+1)} [{ev.get('event_type', 'event')}] {ev.get('title', '')}", expanded=(i == 0)):
+                    ev["title"] = st.text_input("Tiêu đề", value=ev.get("title", ""), key=f"tl_title_{chap_num}_{i}")
+                    ev["description"] = st.text_area("Mô tả", value=ev.get("description", ""), key=f"tl_desc_{chap_num}_{i}")
+                    ev["raw_date"] = st.text_input("Thời điểm (raw_date)", value=ev.get("raw_date", ""), key=f"tl_date_{chap_num}_{i}")
+                    ev["event_type"] = st.selectbox("Loại", ["event", "flashback", "milestone", "timeskip", "other"], index=["event", "flashback", "milestone", "timeskip", "other"].index(ev.get("event_type", "event")), key=f"tl_type_{chap_num}_{i}")
+                    ev["event_order"] = ev.get("event_order", i + 1)
+
+            if st.button("💾 Xác nhận & Lưu Timeline", type="primary", key="da_timeline_save_btn"):
+                if not st.session_state.get("da_confirm_delete_timeline_chapter"):
+                    st.warning("Vui lòng tick xác nhận (xóa timeline cũ của chương) trước khi lưu.")
+                else:
+                    uid = getattr(st.session_state.get("user"), "id", None) or ""
+                    uem = getattr(st.session_state.get("user"), "email", None) or ""
+                    if not check_permission(uid, uem, project_id, "write"):
+                        st.warning("Chỉ thành viên có quyền ghi mới được lưu.")
+                    else:
+                        try:
+                            chapter_id = st.session_state.get("da_timeline_chapter_id")
+                            ch_row = supabase.table("chapters").select("id").eq("story_id", project_id).eq("chapter_number", chap_num).limit(1).execute()
+                            chapter_id = ch_row.data[0]["id"] if ch_row.data else chapter_id
+                            if chapter_id:
+                                old = supabase.table("timeline_events").select("id").eq("story_id", project_id).eq("chapter_id", chapter_id).execute()
+                                if old.data:
+                                    ids = [r["id"] for r in old.data if r.get("id")]
+                                    supabase.table("timeline_events").delete().in_("id", ids).execute()
+                                    st.toast(f"Đã xóa {len(ids)} timeline events cũ của chương.")
+                            saved = 0
+                            for ev in events:
+                                payload = {
+                                    "story_id": project_id,
+                                    "chapter_id": chapter_id,
+                                    "event_order": ev.get("event_order", 0),
+                                    "title": (ev.get("title") or "").strip() or "Sự kiện",
+                                    "description": (ev.get("description") or "").strip(),
+                                    "raw_date": (ev.get("raw_date") or "").strip(),
+                                    "event_type": ev.get("event_type", "event"),
+                                }
+                                supabase.table("timeline_events").insert(payload).execute()
+                                saved += 1
+                            st.session_state.pop("da_timeline_extracted", None)
+                            st.session_state.pop("da_timeline_chapter_num", None)
+                            st.session_state.pop("da_timeline_chapter_id", None)
+                            st.session_state["update_trigger"] = st.session_state.get("update_trigger", 0) + 1
+                            st.success(f"Đã lưu {saved} sự kiện vào Timeline.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+            if st.button("↩️ Hủy / Làm lại", key="da_timeline_cancel"):
+                st.session_state.pop("da_timeline_extracted", None)
+                st.session_state.pop("da_timeline_chapter_num", None)
+                st.session_state.pop("da_timeline_chapter_id", None)
+                st.rerun()
+        else:
+            st.info("AI không tìm thấy sự kiện nào phù hợp trong chương này.")
+            if st.button("Thử lại", key="da_timeline_retry"):
+                st.session_state.pop("da_timeline_extracted", None)
+                st.rerun()
+
+
+def _render_extract_bible_relations_chunking(project_id, content, chap_num, selected_row, file_options, selected_file, supabase):
+    """Nội dung tab Extract Bible / Relations / Chunking (giữ nguyên logic cũ)."""
     # --- Section 1: Extract Bible ---
     st.markdown("---")
     st.subheader("📥 Extract Bible")

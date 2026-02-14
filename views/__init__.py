@@ -68,6 +68,14 @@ except ImportError:
         st.warning("Semantic Intent view failed to load.")
     render_semantic_intent_tab.__module__ = "views"
 
+try:
+    from .timeline_view import render_timeline_tab
+except ImportError:
+    def render_timeline_tab(project_id):
+        import streamlit as st
+        st.warning("Timeline view failed to load.")
+    render_timeline_tab.__module__ = "views"
+
 __all__ = [
     "render_sidebar",
     "render_dashboard_tab",
@@ -89,4 +97,5 @@ __all__ = [
     "render_python_executor_tab",
     "render_arc_tab",
     "render_semantic_intent_tab",
+    "render_timeline_tab",
 ]

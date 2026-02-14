@@ -5,7 +5,7 @@ import streamlit as st
 import json
 
 from config import Config, init_services
-from ai_engine import AIService, ContextManager, check_semantic_intent, SmartAIRouter
+from ai_engine import AIService, ContextManager, check_semantic_intent, SmartAIRouter, _get_default_tool_model
 from utils.python_executor import PythonExecutor
 from utils.auth_manager import check_permission
 from persona import PersonaSystem
@@ -43,7 +43,7 @@ Nhiệm vụ: Tạo code Python (pandas/numpy) để trả lời. Gán kết qu�
 Chỉ trả về code trong block ```python ... ```, không giải thích."""
         code_resp = AIService.call_openrouter(
             messages=[{"role": "user", "content": code_prompt}],
-            model=st.session_state.get("selected_model", Config.DEFAULT_MODEL),
+            model=_get_default_tool_model(),
             temperature=0.1,
             max_tokens=2000,
         )

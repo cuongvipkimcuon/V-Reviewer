@@ -18,6 +18,15 @@ except ImportError:
     ReverseLookupAssembler = None
 
 
+def _get_default_tool_model() -> str:
+    """Model mặc định cho Router, Planner và các công cụ (từ Settings > AI Model)."""
+    try:
+        model = st.session_state.get("default_ai_model") or getattr(Config, "DEFAULT_TOOL_MODEL", None)
+        return model or Config.ROUTER_MODEL
+    except Exception:
+        return getattr(Config, "DEFAULT_TOOL_MODEL", None) or Config.ROUTER_MODEL
+
+
 # ==========================================
 # 🤖 AI SERVICE
 # ==========================================
@@ -175,6 +184,27 @@ def cap_context_to_tokens(text: str, max_tokens: int) -> Tuple[str, int]:
         out = out[:-500]
         est = AIService.estimate_tokens(out)
     return out, est
+
+
+# Giới hạn token cho lịch sử chat đưa vào Router/Planner (tránh vượt context window).
+ROUTER_PLANNER_CHAT_HISTORY_MAX_TOKENS = 6000
+
+
+def cap_chat_history_to_tokens(text: str, max_tokens: int = ROUTER_PLANNER_CHAT_HISTORY_MAX_TOKENS) -> str:
+    """Cắt lịch sử chat sao cho không vượt max_tokens; giữ phần đuôi (tin nhắn gần nhất)."""
+    if not text or max_tokens <= 0:
+        return text or ""
+    est = AIService.estimate_tokens(text)
+    if est <= max_tokens:
+        return text
+    # Giữ đuôi: cắt từ đầu. Ước tính ~4 ký tự/token.
+    target_chars = max_tokens * 4
+    if len(text) <= target_chars:
+        return text
+    out = text[-target_chars:]
+    while AIService.estimate_tokens(out) > max_tokens and len(out) > 500:
+        out = out[500:]
+    return out
 
 
 # ==========================================
@@ -518,6 +548,38 @@ def search_chunks_vector(
 # ==========================================
 
 
+def parse_chapter_range_from_query(query: str) -> Optional[Tuple[int, int]]:
+    """
+    Trích số chương từ câu hỏi (chương 1, chapter 5, chương 5 đến 10, từ chương 3 tới 7...).
+    Trả về (start, end) hoặc None nếu không nhận diện được. Dùng cho fallback read_full_content khi search_chunks không có số chương trong chunk.
+    """
+    if not query or not isinstance(query, str) or not query.strip():
+        return None
+    q = query.strip().lower()
+    # Khoảng: "chương 5 đến 10", "từ chương 3 tới 7", "chapter 2 to 5"
+    range_match = re.search(
+        r"(?:chương|chapter)\s*(\d+)\s*(?:đến|tới|to|-)\s*(?:chương|chapter)?\s*(\d+)",
+        q,
+        re.IGNORECASE,
+    )
+    if range_match:
+        try:
+            a, b = int(range_match.group(1)), int(range_match.group(2))
+            return (min(a, b), max(a, b))
+        except (ValueError, IndexError):
+            pass
+    # Một chương: "chương 1", "chapter 3", "chương 5"
+    single_match = re.search(r"(?:chương|chapter)\s*(\d+)", q, re.IGNORECASE)
+    if single_match:
+        try:
+            n = int(single_match.group(1))
+            if n >= 1:
+                return (n, n)
+        except (ValueError, IndexError):
+            pass
+    return None
+
+
 def extract_prefix(name: str) -> Tuple[str, str]:
     """
     Bóc tách tiền tố: tìm nội dung trong [...] ở đầu chuỗi.
@@ -734,6 +796,29 @@ def get_bible_entries(story_id: str) -> List[Dict[str, Any]]:
         return []
 
 
+def get_timeline_events(project_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """Lấy sự kiện timeline của project (bảng timeline_events V7). Trả về [] nếu bảng chưa có hoặc lỗi."""
+    if not project_id:
+        return []
+    try:
+        services = init_services()
+        if not services:
+            return []
+        supabase = services["supabase"]
+        r = (
+            supabase.table("timeline_events")
+            .select("id, event_order, title, description, raw_date, event_type, chapter_id")
+            .eq("story_id", project_id)
+            .order("event_order")
+            .limit(limit)
+            .execute()
+        )
+        return list(r.data) if r.data else []
+    except Exception as e:
+        print(f"get_timeline_events error: {e}")
+        return []
+
+
 def suggest_relations(content: str, story_id: str) -> List[Dict[str, Any]]:
     """
     AI quét nội dung (chương/đoạn) và so khớp với bible_index để đề xuất:
@@ -780,7 +865,7 @@ Chỉ trả về JSON, không giải thích thêm."""
     try:
         response = AIService.call_openrouter(
             messages=[{"role": "user", "content": prompt}],
-            model=Config.ROUTER_MODEL,
+            model=_get_default_tool_model(),
             temperature=0.2,
             max_tokens=2000,
         )
@@ -834,7 +919,9 @@ class SmartAIRouter:
 
     @staticmethod
     def ai_router_pro_v2(user_prompt: str, chat_history_text: str, project_id: str = None) -> Dict:
-        """Router V2: Phân tích Intent và Target Files, có inject bible_index để nhận diện ý định."""
+        """Router V2: Phân tích Intent và Target Files, có inject bible_index để nhận diện ý định.
+        chat_history_text được giới hạn token để không vượt context window."""
+        chat_history_text = cap_chat_history_to_tokens(chat_history_text or "")
         rules_context = ""
         bible_index = ""
         prefix_setup_str = ""
@@ -853,55 +940,83 @@ class SmartAIRouter:
             prefix_setup_str = "(Chưa cấu hình loại thực thể trong Bible Prefix.)"
 
         router_prompt = f"""
-        Đóng vai Điều Phối Viên Dự Án (Project Coordinator).
-        
-        ⚠️ QUY TẮC BẮT BUỘC:
-        {rules_context}
+### VAI TRÒ
+Bạn là AI Điều Phối Viên (Router) cho hệ thống V7-Universal. Nhiệm vụ của bạn là phân tích Input của User và quyết định công cụ (Intent) chính xác nhất để xử lý. Chỉ trả về JSON.
 
-        BẢNG MÔ TẢ CÁC LOẠI THỰC THỂ (do người dùng cung cấp):
-        {prefix_setup_str}
+### 1. DỮ LIỆU ĐẦU VÀO
+- QUY TẮC DỰ ÁN: {rules_context}
+- BẢNG PREFIX ENTITY: {prefix_setup_str}
+- DANH SÁCH ENTITY (Bible): {bible_index if bible_index else "(Trống)"}
+- LỊCH SỬ CHAT: {chat_history_text}
 
-        DANH SÁCH THỰC THỂ TRONG STORY BIBLE (mỗi dòng: Entity: [LOẠI] Tên):
-        {bible_index if bible_index else "(Chưa có dữ liệu)"}
+### 2. BẢNG QUY TẮC CHỌN INTENT (ƯU TIÊN TỪ TRÊN XUỐNG)
 
-        YÊU CẦU ĐIỀU HƯỚNG: Dựa vào bảng mô tả các loại thực thể. Nếu user hỏi về thực thể (nhân vật, địa điểm...) -> search_bible. Nếu user hỏi theo từng đoạn, từng phần, nội dung chi tiết trong chương/file đã chunk (Data Analyze / Excel/Word chunk) -> search_chunks. Nếu user hỏi diễn biến, sự kiện theo thời gian hoặc nội dung chương đầy đủ -> read_full_content hoặc chapter_range. Chỉ ưu tiên search_chapters khi user hỏi rõ về diễn biến, sự kiện theo thời gian hoặc nội dung chương cụ thể.
+| INTENT | ĐIỀU KIỆN KÍCH HOẠT (TRIGGER) | TỪ KHÓA NHẬN DIỆN |
+| :--- | :--- | :--- |
+| **ask_user_clarification** | Câu hỏi quá ngắn, mơ hồ, thiếu chủ ngữ hoặc không rõ ngữ cảnh. | "Tính đi", "Nó là ai", "Cái đó sao rồi" (khi không có history). |
+| **web_search** | Cần thông tin **THỰC TẾ, THỜI GIAN THỰC** bên ngoài dự án. | "Tỷ giá", "Giá vàng", "Thời tiết", "Tin tức", "Thông số súng Glock ngoài đời", "mới nhất", "tra cứu". |
+| **numerical_calculation** | Yêu cầu **TÍNH TOÁN CON SỐ**, thống kê, so sánh dữ liệu định lượng. | "Tính tổng", "Doanh thu", "Trung bình", "Đếm số lượng", "% tăng trưởng". |
+| **update_data** | User ra lệnh **GHI NHỚ**, cập nhật, sửa đổi dữ liệu hệ thống. | "Hãy nhớ rằng...", "Cập nhật lại...", "Sửa quy tắc...", "Thêm nhân vật...". |
+| **read_full_content** | 1. Nhắc **TÊN FILE** hoặc **SỐ CHƯƠNG** cụ thể. 2. Yêu cầu: Tóm tắt, Review, Viết tiếp, Kiểm tra logic toàn bài. | "Chương 1", "Chapter 5", "File luong.xlsx", "Tóm tắt chương này". |
+| **manage_timeline** | Hỏi về **THỨ TỰ THỜI GIAN**, sự kiện trước/sau, timeline, flashback. | "Sự kiện nào trước", "Sau khi A chết thì...", "Mốc thời gian", "Năm bao nhiêu". |
+| **query_Sql** | Hỏi chi tiết về **THUỘC TÍNH ĐỐI TƯỢNG** (Structure Data) trong DB. | "Nhân vật A là ai", "Địa điểm B có đặc điểm gì". |
+| **mixed_context** | Cần **CẢ** nội dung file/chương **VÀ** thông tin Bible (vừa đoạn văn vừa nhân vật/lore). | "Trong chương 3 nhân vật A làm gì và quan hệ với B", "Nội dung chương 5 kết hợp mô tả nhân vật". |
+| **search_chunks** | Hỏi **CHI TIẾT VỤN VẶT** trong văn bản nhưng **KHÔNG** nhắc số chương cụ thể. | "Ai nói câu...", "Hùng cầm vũ khí gì", "Chi tiết cái áo màu đỏ". |
+| **search_bible** | Hỏi về Lore, cốt truyện chung, khái niệm, quan hệ nhân vật; **hoặc** user tham chiếu nội dung đã nói trong chat (crystallize). | (Tên nhân vật trong Bible), "Thế giới này vận hành sao", "Quy tắc phép thuật"; "như tôi đã nói về...", "chủ đề trước đó", "đoạn chat trước về X". |
+| **chat_casual** | Chào hỏi xã giao, không yêu cầu dữ liệu hay tra cứu. | "Hello", "Cảm ơn", "Bạn khỏe không". |
 
-        LỊCH SỬ CHAT:
-        {chat_history_text}
-        
-        INPUT CỦA USER: "{user_prompt}"
-        
-        NHIỆM VỤ: Phân tích intent, target files VÀ nhận diện PHẠM VI CHƯƠNG (Chapter Range) nếu user đề cập.
+### 3. HƯỚNG DẪN XỬ LÝ ĐẶC BIỆT (CRITICAL RULES)
+1. **Quy tắc "Chương Cụ Thể":** Nếu user nhắc "Chương X", "Chapter Y" -> BẮT BUỘC chọn `read_full_content`. Tuyệt đối KHÔNG chọn `search_chunks`.
+2. **Quy tắc "Thực Tế":** Nếu hỏi tỷ giá, tin tức, thời tiết, giá vàng, thông số thực tế -> BẮT BUỘC chọn `web_search`. Tuyệt đối KHÔNG chọn `chat_casual` hay `search_bible`.
+3. **Quy tắc "Làm Rõ":** Nếu không hiểu user muốn gì (câu quá ngắn/mơ hồ) -> Chọn `ask_user_clarification` và điền `clarification_question`.
+4. **Quy tắc "Tham chiếu chat cũ":** Nếu tin nhắn mới CHỈ là tham chiếu đến lệnh/câu hỏi trước (vd: "làm cái đó", "ok làm đi", "như vừa nói", "thực hiện đi", "đúng rồi làm đi") thì dựa vào LỊCH SỬ CHAT: lấy lại intent và rewritten_query của tin nhắn user gần nhất có nội dung cụ thể, điền vào output. Ví dụ: history có "user: Tóm tắt chương 1" rồi "model: ..." rồi "user: làm đi" -> intent vẫn read_full_content, rewritten_query "Tóm tắt chương 1".
+5. **Quy tắc "Tham chiếu nội dung chat (crystallize)":** Nếu user nói đã bàn / đã nói về chủ đề X trong chat (vd: "như tôi đã nói về nhân vật A", "chủ đề trước đó về timeline", "theo đoạn chat trước về quy tắc") -> chọn `search_bible`. Điền `rewritten_query` là chủ đề hoặc từ khóa cần tìm (vd: "nhân vật A", "timeline", "quy tắc đã thảo luận"). Hệ thống sẽ tìm trong Bible kể cả entry [CHAT] (crystallize từ chat).
 
-        PHÂN LOẠI INTENT:
-        1. "numerical_calculation": User hỏi về SỐ LIỆU, tính toán, thống kê (tổng, trung bình, đếm, %, doanh thu, chi phí...) -> Ưu tiên Python Executor với Pandas/NumPy.
-        2. "read_full_content": User muốn Sửa, Review, Viết tiếp, Kiểm tra code/văn, hoặc nhắc đến tên file cụ thể -> Cần đọc NGUYÊN VĂN FILE.
-        3. "search_chunks": User hỏi thông tin chi tiết theo từng đoạn/phần; dữ liệu đã chunk (Excel theo dòng, Word/theo chương từ Data Analyze); cần trích đoạn cụ thể, nội dung từng phần, hoặc tìm trong các chunk đã vector hóa -> Tra chunks (vector + reverse lookup chapter/arc). Ưu tiên search_chunks khi câu hỏi cần trích đoạn cụ thể hoặc dữ liệu đã được chunk.
-        4. "search_bible": User hỏi thông tin chung, Lore, cốt truyện, quy định, khái niệm, hoặc nhắc tên nhân vật/thực thể có trong danh sách Bible trên -> Tra cứu Bible (search_bible / get_entity_relations).
-        5. "chat_casual": Chào hỏi, khen chê, nói chuyện phiếm không cần dữ liệu dự án.
-        6. "mixed_context": Cần cả nội dung file VÀ kiến thức Bible.
+### 4. LOGIC TRÍCH XUẤT CHAPTER RANGE
+- "Chương 1", "Chap 5" -> chapter_range_mode: "range", chapter_range: [1, 1] hoặc [5, 5]
+- "Chương 1 đến 5" -> chapter_range_mode: "range", chapter_range: [1, 5]
+- "3 chương đầu", "mấy chương đầu" -> chapter_range_mode: "first", chapter_range_count: 3 (hoặc số user nói)
+- "Chương mới nhất", "mấy chương cuối" -> chapter_range_mode: "latest", chapter_range_count: 1 (hoặc số user nói)
+- Không liên quan chương -> chapter_range: null, chapter_range_mode: null
 
-        inferred_prefixes: Khi intent là search_bible hoặc mixed_context, điền mảng prefix_key (từ BẢNG MÔ TẢ trên) tương ứng loại thực thể user đang hỏi. VD: hỏi nhân vật -> ["CHARACTER"]; hỏi địa điểm -> ["LOCATION"]; hỏi lore + nhân vật -> ["LORE", "CHARACTER"]. Viết HOA, không ngoặc. Nếu không xác định được -> [].
+### 5. VÍ DỤ MINH HỌA (FEW-SHOT)
 
-        NHẬN DIỆN PHẠM VI CHƯƠNG (chapter_range):
-        - Nếu user nói "chương đầu", "mấy chương đầu", "đầu truyện" -> đặt "chapter_range_mode": "first", "chapter_range_count": 5 (hoặc số user nói nếu rõ).
-        - Nếu user nói "mới nhất", "chương mới", "mấy chương cuối" -> đặt "chapter_range_mode": "latest", "chapter_range_count": 5 (hoặc số user nói nếu rõ).
-        - Nếu user nói cụ thể "từ chương 5 đến 10", "chương 5 đến 10" -> đặt "chapter_range": [5, 10], "chapter_range_mode": "range".
-        - Nếu không liên quan phạm vi chương -> để "chapter_range": null, "chapter_range_mode": null.
+**Input:** "Tóm tắt nội dung chương 1 cho anh."
+**Output:** {{ "intent": "read_full_content", "reason": "User yêu cầu tóm tắt và chỉ định chương 1.", "chapter_range": [1, 1], "chapter_range_mode": "range", "rewritten_query": "Tóm tắt chương 1", "target_files": [], "target_bible_entities": [], "inferred_prefixes": [], "chapter_range_count": 5, "clarification_question": "", "update_summary": "" }}
 
-        OUTPUT (JSON ONLY):
-        {{
-            "intent": "numerical_calculation" | "read_full_content" | "search_chunks" | "search_bible" | "chat_casual" | "mixed_context",
-            "target_files": ["tên file 1", "tên file 2"],
-            "target_bible_entities": ["tên thực thể 1", "tên thực thể 2"],
-            "inferred_prefixes": ["CHARACTER", "LOCATION"],
-            "reason": "Lý do ngắn gọn bằng tiếng Việt",
-            "rewritten_query": "Viết lại câu hỏi của user cho rõ nghĩa hơn để search database",
-            "chapter_range": [start, end] hoặc null,
-            "chapter_range_mode": "first" | "latest" | "range" | null,
-            "chapter_range_count": 5
-        }}
-        """
+**Input:** "Thằng Hùng sử dụng loại súng nào trong truyện?" (Không nhắc chương)
+**Output:** {{ "intent": "search_chunks", "reason": "Hỏi chi tiết cụ thể về nhân vật Hùng, không rõ vị trí chương.", "target_bible_entities": ["Hùng"], "rewritten_query": "Hùng sử dụng súng gì", "target_files": [], "inferred_prefixes": [], "chapter_range": null, "chapter_range_mode": null, "chapter_range_count": 5, "clarification_question": "", "update_summary": "" }}
+
+**Input:** "Tỷ giá USD/VND hôm nay bao nhiêu?"
+**Output:** {{ "intent": "web_search", "reason": "Hỏi thông tin thời gian thực ngoài hệ thống.", "rewritten_query": "Tỷ giá USD VND hôm nay", "target_files": [], "target_bible_entities": [], "inferred_prefixes": [], "chapter_range": null, "chapter_range_mode": null, "chapter_range_count": 5, "clarification_question": "", "update_summary": "" }}
+
+**Input:** "Sự kiện Hùng gặp Thảo xảy ra trước hay sau vụ nổ?"
+**Output:** {{ "intent": "manage_timeline", "reason": "Hỏi về thứ tự trước sau của 2 sự kiện.", "rewritten_query": "So sánh thời gian sự kiện Hùng gặp Thảo và vụ nổ", "target_files": [], "target_bible_entities": [], "inferred_prefixes": [], "chapter_range": null, "chapter_range_mode": null, "chapter_range_count": 5, "clarification_question": "", "update_summary": "" }}
+
+**Input:** "Tính tổng doanh thu của 3 tháng đầu năm."
+**Output:** {{ "intent": "numerical_calculation", "reason": "Yêu cầu tính toán tổng số liệu.", "rewritten_query": "Tổng doanh thu 3 tháng đầu năm", "target_files": [], "target_bible_entities": [], "inferred_prefixes": [], "chapter_range": null, "chapter_range_mode": null, "chapter_range_count": 5, "clarification_question": "", "update_summary": "" }}
+
+**Input:** "Lưu ý quy tắc này: Không được viết tắt tên nhân vật."
+**Output:** {{ "intent": "update_data", "reason": "User ra lệnh ghi nhớ quy tắc.", "update_summary": "Thêm quy tắc cấm viết tắt tên nhân vật vào hệ thống.", "rewritten_query": "Ghi nhớ quy tắc", "target_files": [], "target_bible_entities": [], "inferred_prefixes": [], "chapter_range": null, "chapter_range_mode": null, "chapter_range_count": 5, "clarification_question": "" }}
+
+### 6. INPUT CỦA USER
+"{user_prompt}"
+
+### 7. OUTPUT (JSON ONLY) — Trả về đúng format sau, đủ các key:
+{{
+    "intent": "ask_user_clarification" | "web_search" | "numerical_calculation" | "update_data" | "read_full_content" | "manage_timeline" | "query_Sql" | "mixed_context" | "search_chunks" | "search_bible" | "chat_casual",
+    "target_files": [],
+    "target_bible_entities": [],
+    "inferred_prefixes": [],
+    "reason": "Lý do ngắn gọn bằng tiếng Việt",
+    "rewritten_query": "Viết lại câu hỏi cho search",
+    "chapter_range": null hoặc [start, end],
+    "chapter_range_mode": null hoặc "first" | "latest" | "range",
+    "chapter_range_count": 5,
+    "clarification_question": "" hoặc "Câu hỏi gợi ý (khi intent ask_user_clarification)",
+    "update_summary": "" hoặc "Mô tả thao tác (khi intent update_data)"
+}}
+"""
 
         messages = [
             {"role": "system", "content": "Bạn là AI Router thông minh. Chỉ trả về JSON."},
@@ -911,7 +1026,7 @@ class SmartAIRouter:
         try:
             response = AIService.call_openrouter(
                 messages=messages,
-                model=Config.ROUTER_MODEL,
+                model=_get_default_tool_model(),
                 temperature=0.1,
                 max_tokens=500,
                 response_format={"type": "json_object"}
@@ -929,6 +1044,8 @@ class SmartAIRouter:
             result.setdefault("chapter_range", None)
             result.setdefault("chapter_range_mode", None)
             result.setdefault("chapter_range_count", 5)
+            result.setdefault("clarification_question", "")
+            result.setdefault("update_summary", "")
             if not isinstance(result.get("inferred_prefixes"), list):
                 result["inferred_prefixes"] = []
             # Chỉ giữ inferred_prefixes có trong DB (get_valid_prefix_keys)
@@ -953,7 +1070,266 @@ class SmartAIRouter:
                 "chapter_range": None,
                 "chapter_range_mode": None,
                 "chapter_range_count": 5,
+                "clarification_question": "",
+                "update_summary": "",
             }
+
+    @staticmethod
+    def get_plan_v7(user_prompt: str, chat_history_text: str, project_id: str = None) -> Dict:
+        """
+        V7 Agentic Planner: Trả về plan (mảng bước) thay vì single intent.
+        Return: { "analysis": str, "plan": [ { step_id, intent, args: { query_refined, target_files, target_bible_entities, chapter_range, ... } } ], "verification_required": bool }
+        Nếu câu hỏi đơn giản -> plan 1 bước. Câu phức tạp (vd so sánh timeline + Bible) -> nhiều bước.
+        Fallback: nếu parse lỗi hoặc API trả format cũ (single intent) -> chuyển thành plan 1 bước.
+        """
+        rules_context = ""
+        bible_index = ""
+        prefix_setup_str = ""
+        if project_id:
+            rules_context = ContextManager.get_mandatory_rules(project_id)
+            bible_index = get_bible_index(project_id, max_tokens=2000)
+        try:
+            prefix_setup = Config.get_prefix_setup()
+            prefix_setup_str = "\n".join(
+                f"- [{p.get('prefix_key', '')}]: {p.get('description', '')}" for p in (prefix_setup or [])
+            ) if prefix_setup else "(Chưa cấu hình Bible Prefix.)"
+        except Exception:
+            prefix_setup_str = "(Chưa cấu hình Bible Prefix.)"
+
+        # Giới hạn lịch sử chat theo token để không vượt context (giữ tin gần nhất).
+        chat_history_capped = cap_chat_history_to_tokens(chat_history_text or "")
+        planner_prompt = f"""Bạn là V7 Planner. Nhiệm vụ: phân tích câu user và đưa ra KẾ HOẠCH (mảng bước) thực thi.
+
+DỮ LIỆU: QUY TẮC={rules_context[:1500]} | PREFIX={prefix_setup_str[:800]} | BIBLE INDEX={bible_index[:2000] if bible_index else "(Trống)"} | LỊCH SỬ={chat_history_capped}
+
+INPUT USER: "{user_prompt}"
+
+QUY TẮC:
+- **Tham chiếu chat cũ:** Nếu user chỉ nói kiểu xác nhận/tham chiếu (vd: "làm cái đó", "ok làm đi", "như vừa nói", "thực hiện đi") thì dựa vào LỊCH SỬ: lấy lại ý định/câu hỏi của tin nhắn user gần nhất có nội dung cụ thể, dùng làm query_refined và intent tương ứng cho plan 1 bước.
+- **Tham chiếu nội dung chat (crystallize):** Nếu user nói đã bàn/đã nói về chủ đề X (vd: "như tôi đã nói về nhân vật A", "chủ đề trước đó về timeline") -> dùng intent `search_bible`, query_refined = chủ đề/từ khóa cần tìm (Bible gồm cả entry [CHAT] crystallize).
+- Câu ĐƠN GIẢN (một ý): trả về plan có 1 bước với intent phù hợp.
+- Câu PHỨC TẠP (nhiều ý): tách thành nhiều bước. VD: "Kiểm tra thứ tự sự kiện A rồi so với quy tắc Bible" -> step1: manage_timeline (lấy sự kiện A), step2: search_bible (lấy quy tắc).
+- Mỗi bước: step_id (số từ 1), intent (đúng tên: manage_timeline | numerical_calculation | read_full_content | search_chunks | search_bible | mixed_context | web_search | ask_user_clarification | update_data | query_Sql | chat_casual), args (query_refined, target_files[], target_bible_entities[], chapter_range null hoặc [a,b], chapter_range_mode, chapter_range_count). dependency: null hoặc step_id bước trước (thường null vì chạy tuần tự).
+- verification_required: true nếu plan có numerical_calculation, manage_timeline, hoặc bất kỳ intent cần grounding (read_full_content, search_chunks, search_bible, mixed_context, query_Sql); ngược lại false.
+
+Trả về ĐÚNG MỘT JSON:
+{{
+  "analysis": "Giải thích ngắn tại sao chọn các bước này",
+  "plan": [
+    {{ "step_id": 1, "intent": "tên_intent", "args": {{ "query_refined": "...", "target_files": [], "target_bible_entities": [], "chapter_range": null, "chapter_range_mode": null, "chapter_range_count": 5 }}, "dependency": null }}
+  ],
+  "verification_required": true
+}}
+Chỉ trả về JSON."""
+
+        try:
+            response = AIService.call_openrouter(
+                messages=[
+                    {"role": "system", "content": "Bạn là V7 Planner. Chỉ trả về JSON với analysis, plan, verification_required."},
+                    {"role": "user", "content": planner_prompt}
+                ],
+                model=_get_default_tool_model(),
+                temperature=0.1,
+                max_tokens=800,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content
+            content = AIService.clean_json_text(content)
+            data = json.loads(content)
+        except Exception as e:
+            print(f"Planner V7 error: {e}")
+            single = SmartAIRouter.ai_router_pro_v2(user_prompt, chat_history_text, project_id)
+            return SmartAIRouter._single_intent_to_plan(single, user_prompt)
+
+        plan = data.get("plan")
+        if not plan or not isinstance(plan, list):
+            single = SmartAIRouter.ai_router_pro_v2(user_prompt, chat_history_text, project_id)
+            return SmartAIRouter._single_intent_to_plan(single, user_prompt)
+
+        analysis = data.get("analysis", "")
+        verification_required = bool(data.get("verification_required", False))
+        normalized_plan = []
+        for i, s in enumerate(plan):
+            if not isinstance(s, dict):
+                continue
+            intent = (s.get("intent") or "chat_casual").strip()
+            args = s.get("args") or {}
+            if not isinstance(args, dict):
+                args = {}
+            step_id = int(s.get("step_id", i + 1))
+            dependency = s.get("dependency")
+            normalized_plan.append({
+                "step_id": step_id,
+                "intent": intent,
+                "args": {
+                    "query_refined": args.get("query_refined") or args.get("rewritten_query") or user_prompt,
+                    "target_files": args.get("target_files") if isinstance(args.get("target_files"), list) else [],
+                    "target_bible_entities": args.get("target_bible_entities") if isinstance(args.get("target_bible_entities"), list) else [],
+                    "chapter_range": args.get("chapter_range"),
+                    "chapter_range_mode": args.get("chapter_range_mode"),
+                    "chapter_range_count": args.get("chapter_range_count", 5),
+                    "inferred_prefixes": args.get("inferred_prefixes") if isinstance(args.get("inferred_prefixes"), list) else [],
+                    "clarification_question": args.get("clarification_question") or "",
+                    "update_summary": args.get("update_summary") or "",
+                },
+                "dependency": dependency,
+            })
+        if not normalized_plan:
+            single = SmartAIRouter.ai_router_pro_v2(user_prompt, chat_history_text, project_id)
+            return SmartAIRouter._single_intent_to_plan(single, user_prompt)
+
+        # Bật verify nếu plan chứa bất kỳ intent cần numerical/timeline/grounding
+        intents_need_verify = {"numerical_calculation", "manage_timeline", "read_full_content", "search_chunks", "search_bible", "mixed_context", "query_Sql"}
+        if any(s.get("intent") in intents_need_verify for s in normalized_plan):
+            verification_required = True
+
+        return {
+            "analysis": analysis,
+            "plan": normalized_plan,
+            "verification_required": verification_required,
+        }
+
+    @staticmethod
+    def _single_intent_to_plan(single_router_result: Dict, user_prompt: str) -> Dict:
+        """Chuyển kết quả router single-intent thành plan 1 bước (tương thích V7)."""
+        intent = single_router_result.get("intent", "chat_casual")
+        return {
+            "analysis": single_router_result.get("reason", ""),
+            "plan": [{
+                "step_id": 1,
+                "intent": intent,
+                "args": {
+                    "query_refined": single_router_result.get("rewritten_query") or user_prompt,
+                    "target_files": single_router_result.get("target_files") or [],
+                    "target_bible_entities": single_router_result.get("target_bible_entities") or [],
+                    "chapter_range": single_router_result.get("chapter_range"),
+                    "chapter_range_mode": single_router_result.get("chapter_range_mode"),
+                    "chapter_range_count": single_router_result.get("chapter_range_count", 5),
+                    "inferred_prefixes": single_router_result.get("inferred_prefixes") or [],
+                    "clarification_question": single_router_result.get("clarification_question") or "",
+                    "update_summary": single_router_result.get("update_summary") or "",
+                },
+                "dependency": None,
+            }],
+            "verification_required": intent in (
+                "numerical_calculation", "manage_timeline",
+                "read_full_content", "search_chunks", "search_bible", "mixed_context", "query_Sql",
+            ),
+        }
+
+
+# ==========================================
+# 🔄 V7 DYNAMIC RE-PLANNING
+# ==========================================
+def evaluate_step_outcome(intent: str, ctx_text: str, sources: List[str]) -> Tuple[bool, str]:
+    """
+    Đánh giá bước vừa chạy: có "thất bại" (không tìm thấy dữ liệu) cần cân nhắc re-plan không.
+    Returns: (should_consider_replan, reason).
+    """
+    if not intent or intent in ("chat_casual", "ask_user_clarification", "update_data", "web_search"):
+        return False, ""
+    ctx_upper = (ctx_text or "").upper()
+    ctx_lower = (ctx_text or "").lower()
+    src_list = sources or []
+
+    if intent == "read_full_content":
+        if "--- TARGET CONTENT ---" not in ctx_text and "NỘI DUNG CHƯƠNG" not in ctx_text:
+            return True, "read_full_content: không tìm thấy file/chương (target content trống)"
+        return False, ""
+
+    if intent == "search_chunks":
+        has_chunk = any("chunk" in s.lower() or "reverse" in s.lower() for s in src_list)
+        has_fallback = "Chapter fallback" in str(src_list) or "NỘI DUNG CHƯƠNG" in ctx_text
+        if not has_chunk and not has_fallback:
+            return True, "search_chunks: không tìm thấy chunk hoặc fallback chương"
+        return False, ""
+
+    if intent == "search_bible":
+        has_bible = "📚" in str(src_list) or "KNOWLEDGE BASE" in ctx_upper or "--- " in ctx_text and "---" in ctx_text
+        if not has_bible or (len(ctx_text or "") < 500 and "Bible" not in ctx_text):
+            return True, "search_bible: không tìm thấy dữ liệu Bible"
+        return False, ""
+
+    if intent == "mixed_context":
+        has_any = "📚" in str(src_list) or "RELATED FILES" in ctx_text or "Timeline" in ctx_upper or "Chunk" in str(src_list)
+        if not has_any:
+            return True, "mixed_context: không có Bible, file, timeline hay chunk"
+        return False, ""
+
+    if intent == "manage_timeline":
+        if "[TIMELINE] Chưa có dữ liệu" in ctx_text or "Timeline (empty)" in str(src_list):
+            return True, "manage_timeline: chưa có dữ liệu timeline_events"
+        return False, ""
+
+    if intent == "query_Sql":
+        if "KNOWLEDGE BASE (query_Sql" not in ctx_text and "🔍 Query SQL" not in str(src_list):
+            return True, "query_Sql: không có dữ liệu Bible/đối tượng"
+        return False, ""
+
+    return False, ""
+
+
+def replan_after_step(
+    user_prompt: str,
+    cumulative_context: str,
+    step_results: List[Dict],
+    step_just_done: Dict,
+    outcome_reason: str,
+    remaining_plan: List[Dict],
+    project_id: Optional[str] = None,
+) -> Tuple[str, str, List[Dict]]:
+    """
+    Gọi LLM quyết định: continue / replace / abort sau khi một bước thất bại (không tìm thấy dữ liệu).
+    Returns: (action, reason, new_plan). new_plan chỉ có khi action == "replace".
+    """
+    intent_done = step_just_done.get("intent", "chat_casual")
+    args_done = step_just_done.get("args") or {}
+    remaining_summary = json.dumps([{"step_id": s.get("step_id"), "intent": s.get("intent")} for s in remaining_plan], ensure_ascii=False)
+
+    prompt_text = f"""User hỏi: "{user_prompt[:500]}"
+
+Vừa thực thi xong bước: intent={intent_done}, args={json.dumps(args_done, ensure_ascii=False)[:300]}.
+Kết quả bước này: {outcome_reason} (không tìm thấy dữ liệu / thất bại).
+
+Context đã tích lũy (rút gọn): {cumulative_context[:2500]}...
+
+Kế hoạch còn lại (chưa chạy): {remaining_summary}
+
+Nhiệm vụ: Quyết định một trong ba:
+1. **continue** – Giữ nguyên plan còn lại, chạy tiếp (thử bước tiếp theo).
+2. **replace** – Thay thế plan còn lại bằng plan mới (vd: thay "tìm file A" bằng "tìm file B", hoặc đổi intent khác phù hợp). Trả về new_plan là mảng bước thay thế (format giống plan: step_id, intent, args với query_refined, target_files, target_bible_entities, chapter_range, ...).
+3. **abort** – Dừng thực thi, không chạy thêm bước; trả lời dựa trên context hiện có.
+
+Trả về ĐÚNG MỘT JSON (chỉ JSON, không giải thích):
+{{ "action": "continue" | "replace" | "abort", "reason": "Lý do ngắn", "new_plan": [] }}
+
+Với action=replace thì new_plan phải có ít nhất 1 bước. Với continue/abort thì new_plan để []."""
+
+    try:
+        r = AIService.call_openrouter(
+            messages=[
+                {"role": "system", "content": "Bạn là V7 Re-planner. Chỉ trả về JSON với action, reason, new_plan."},
+                {"role": "user", "content": prompt_text},
+            ],
+            model=_get_default_tool_model(),
+            temperature=0.2,
+            max_tokens=600,
+            response_format={"type": "json_object"},
+        )
+        content = AIService.clean_json_text(r.choices[0].message.content or "{}")
+        data = json.loads(content)
+        action = (data.get("action") or "continue").strip().lower()
+        if action not in ("continue", "replace", "abort"):
+            action = "continue"
+        reason = str(data.get("reason") or "").strip() or outcome_reason
+        new_plan = data.get("new_plan") if isinstance(data.get("new_plan"), list) else []
+        if action == "replace" and not new_plan:
+            action = "continue"
+            new_plan = []
+        return action, reason, new_plan
+    except Exception as e:
+        print(f"replan_after_step error: {e}")
+        return "continue", "", []
 
 
 # ==========================================
@@ -1367,8 +1743,75 @@ class ContextManager:
                     total_tokens += chunk_tokens
                     sources.extend(chunk_sources)
                     sources.append("📦 Chunk + Reverse Lookup")
-            if not chunk_ids:
+            # Fallback: khi không có chunk hoặc câu hỏi nhắc số chương cụ thể -> load nội dung chương theo số (chunk thường không chứa "chương 1" trong text)
+            chapter_range_from_query = parse_chapter_range_from_query(query_for_chunk or router_result.get("rewritten_query") or "")
+            if chapter_range_from_query and (not chunk_ids or not context_parts):
+                full_text, source_names = ContextManager.load_chapters_by_range(
+                    project_id, chapter_range_from_query[0], chapter_range_from_query[1],
+                    token_limit=8000,
+                )
+                if full_text:
+                    context_parts.append(f"\n--- 📄 NỘI DUNG CHƯƠNG (fallback theo số chương) ---\n{full_text}")
+                    total_tokens += AIService.estimate_tokens(full_text)
+                    sources.extend(source_names)
+                    sources.append("📄 Chapter fallback")
+            if not chunk_ids and not chapter_range_from_query:
                 # Fallback: search bible
+                intent = "search_bible"
+
+        elif intent == "manage_timeline":
+            events = get_timeline_events(project_id)
+            if events:
+                lines = ["[TIMELINE EVENTS - Thứ tự sự kiện / mốc thời gian]"]
+                for e in events:
+                    order = e.get("event_order", 0)
+                    title = e.get("title", "")
+                    desc = (e.get("description") or "")[:800]
+                    raw_date = e.get("raw_date", "")
+                    etype = e.get("event_type", "event")
+                    lines.append(f"- #{order} [{etype}] {title}" + (f" (Thời điểm: {raw_date})" if raw_date else "") + f"\n  {desc}")
+                block = "\n".join(lines)
+                context_parts.append(block)
+                total_tokens += AIService.estimate_tokens(block)
+                sources.append("📅 Timeline Events")
+            else:
+                context_parts.append("[TIMELINE] Chưa có dữ liệu timeline_events cho dự án này. Trả lời thông tin có trong Bible/chương nếu liên quan.")
+                sources.append("📅 Timeline (empty)")
+
+        elif intent == "web_search":
+            try:
+                from utils.web_search import web_search as do_web_search
+                search_text = do_web_search(router_result.get("rewritten_query") or "", max_results=5)
+            except Exception as ex:
+                search_text = f"[WEB SEARCH] Lỗi: {ex}. Trả lời dựa trên kiến thức có sẵn."
+            context_parts.append(search_text)
+            total_tokens += AIService.estimate_tokens(search_text)
+            sources.append("🌐 Web Search")
+
+        elif intent == "ask_user_clarification":
+            clarification_question = router_result.get("clarification_question", "") or "Bạn có thể nói rõ hơn câu hỏi hoặc chủ đề bạn muốn hỏi?"
+            context_parts.append(f"[CẦN LÀM RÕ]\nHệ thống cần thêm thông tin: {clarification_question}\nTrả lời ngắn gọn, lịch sự yêu cầu user làm rõ theo gợi ý trên (không đoán bừa).")
+            sources.append("❓ Clarification")
+
+        elif intent == "update_data":
+            update_summary = router_result.get("update_summary", "") or "Ghi nhớ / cập nhật dữ liệu theo yêu cầu user."
+            context_parts.append(f"[CẬP NHẬT DỮ LIỆU - CẦN XÁC NHẬN]\n{update_summary}\n\nThao tác này chỉ thực hiện sau khi user xác nhận. Trả lời tóm tắt nội dung sẽ được ghi và nhắc user xác nhận trước khi thực hiện.")
+            sources.append("✏️ Update (pending confirm)")
+
+        elif intent == "query_Sql":
+            # Dữ liệu đối tượng (entity, thuộc tính): Bible + chapters. Không dùng timeline_events (đó là manage_timeline).
+            rewritten = (router_result.get("rewritten_query") or "").strip() or (router_result.get("target_bible_entities") or [""])[0]
+            sql_context_parts = []
+            raw_list = HybridSearch.smart_search_hybrid_raw(rewritten, project_id, top_k=5) if rewritten else []
+            if raw_list:
+                part = format_bible_context_by_sections(raw_list)
+                sql_context_parts.append(f"\n--- KNOWLEDGE BASE (query_Sql - đối tượng) ---\n{part}")
+            if sql_context_parts:
+                block = "\n".join(sql_context_parts)
+                context_parts.append(block)
+                total_tokens += AIService.estimate_tokens(block)
+                sources.append("🔍 Query SQL")
+            else:
                 intent = "search_bible"
 
         if intent == "search_bible" or intent == "mixed_context":
@@ -1479,6 +1922,38 @@ class ContextManager:
                 sources.extend(source_names)
                 total_tokens += AIService.estimate_tokens(full_text)
 
+        # mixed_context: bổ sung timeline + chunks (Bible và file đã có ở trên) để đủ nguồn trả lời.
+        if intent == "mixed_context":
+            events = get_timeline_events(project_id, limit=30)
+            if events:
+                lines = ["[TIMELINE EVENTS - Thứ tự sự kiện / mốc thời gian]"]
+                for e in events:
+                    order = e.get("event_order", 0)
+                    title = e.get("title", "")
+                    desc = (e.get("description") or "")[:500]
+                    raw_date = e.get("raw_date", "")
+                    etype = e.get("event_type", "event")
+                    lines.append(f"- #{order} [{etype}] {title}" + (f" (Thời điểm: {raw_date})" if raw_date else "") + f"\n  {desc}")
+                block = "\n".join(lines)
+                context_parts.append(block)
+                total_tokens += AIService.estimate_tokens(block)
+                sources.append("📅 Timeline Events (mixed)")
+            query_for_chunk = (router_result.get("rewritten_query") or "").strip() or "nội dung"
+            chunk_rows = search_chunks_vector(query_for_chunk, project_id, arc_id=current_arc_id, top_k=5)
+            if not chunk_rows and current_arc_id:
+                chunk_rows = search_chunks_vector(query_for_chunk, project_id, arc_id=None, top_k=5)
+            if chunk_rows and ReverseLookupAssembler:
+                chunk_ids = [str(c.get("id")) for c in chunk_rows if c.get("id")]
+                if chunk_ids:
+                    chunk_ctx, chunk_sources, chunk_tokens = ContextManager.build_context_with_chunk_reverse_lookup(
+                        project_id, chunk_ids, current_arc_id, token_limit=5000
+                    )
+                    if chunk_ctx:
+                        context_parts.append(chunk_ctx)
+                        total_tokens += chunk_tokens
+                        sources.extend(chunk_sources)
+                        sources.append("📦 Chunks (mixed)")
+
         context_str = "\n".join(context_parts)
         if max_context_tokens is not None and total_tokens > max_context_tokens:
             context_str, total_tokens = cap_context_to_tokens(context_str, max_context_tokens)
@@ -1493,7 +1968,7 @@ def suggest_import_category(text: str) -> str:
     if not text or len(text.strip()) < 20:
         return "[OTHER]"
     try:
-        model = getattr(Config, "METADATA_MODEL", None) or "google/gemini-2.5-flash"
+        model = _get_default_tool_model()
         prefixes = Config.get_prefixes()
         if not prefixes:
             return "[OTHER]"
@@ -1536,7 +2011,7 @@ def generate_arc_summary_from_chapters(chapter_summaries: List[Dict[str, Any]], 
         return None
     combined = "\n".join(parts)
     try:
-        model = getattr(Config, "METADATA_MODEL", None) or "google/gemini-2.5-flash"
+        model = _get_default_tool_model()
         prompt = f"""Các tóm tắt chương thuộc Arc '{arc_name or 'Unnamed'}':
 
 {combined}
@@ -1556,11 +2031,11 @@ Nhiệm vụ: Viết 1 đoạn tóm tắt ngắn gọn (2-5 câu) cho toàn bộ
 
 
 def generate_chapter_metadata(content: str) -> Dict[str, str]:
-    """Dùng model rẻ (gemini/haiku/deepseek) để tóm tắt nội dung và phân tích art_style. Trả về {"summary": "...", "art_style": "..."}. Defensive: trả về dict rỗng nếu lỗi."""
+    """Dùng model từ Settings để tóm tắt nội dung và phân tích art_style. Trả về {"summary": "...", "art_style": "..."}. Defensive: trả về dict rỗng nếu lỗi."""
     if not content or not str(content).strip():
         return {"summary": "", "art_style": ""}
     try:
-        model = getattr(Config, "METADATA_MODEL", None) or "google/gemini-2.5-flash"
+        model = _get_default_tool_model()
         prompt = f"""Phân tích đoạn văn/chương sau và trả về ĐÚNG MỘT JSON với 2 key:
 - "summary": Tóm tắt nội dung (2-4 câu, tiếng Việt).
 - "art_style": Phong cách viết (ví dụ: kể chuyện, mô tả, đối thoại, hành động; 1-2 câu).
@@ -1587,6 +2062,62 @@ Chỉ trả về JSON, không giải thích. Ví dụ: {{"summary": "...", "art_
     except Exception as e:
         print(f"generate_chapter_metadata error: {e}")
         return {"summary": "", "art_style": ""}
+
+
+def extract_timeline_events_from_content(content: str, chapter_label: str = "") -> List[Dict[str, Any]]:
+    """
+    AI trích xuất các sự kiện timeline từ nội dung chương (thứ tự, mốc thời gian, flashback).
+    Trả về list [{"event_order": int, "title": str, "description": str, "raw_date": str, "event_type": "event"|"flashback"|"milestone"|"timeskip"|"other"}].
+    """
+    if not content or not str(content).strip():
+        return []
+    try:
+        model = _get_default_tool_model()
+        ctx = f"Chương: {chapter_label}\n\n" if chapter_label else ""
+        prompt = f"""Trích xuất các SỰ KIỆN theo thứ tự thời gian từ nội dung dưới đây. Mỗi sự kiện có thứ tự (event_order bắt đầu 1), tiêu đề ngắn, mô tả, thời điểm (raw_date: có thể là "đầu chương", "sau khi X", "trước chiến tranh", năm, v.v.), và loại (event_type: event, flashback, milestone, timeskip, other).
+
+{ctx}NỘI DUNG:
+{content[:25000]}
+
+Trả về ĐÚNG MỘT JSON với key "events" là mảng các object:
+{{ "event_order": 1, "title": "...", "description": "...", "raw_date": "...", "event_type": "event" }}
+event_type chỉ được là một trong: event, flashback, milestone, timeskip, other.
+Nếu không có sự kiện rõ ràng, trả về {{ "events": [] }}. Chỉ trả về JSON."""
+        response = AIService.call_openrouter(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            temperature=0.2,
+            max_tokens=4000,
+            response_format={"type": "json_object"},
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        raw = AIService.clean_json_text(raw)
+        data = json.loads(raw)
+        events = data.get("events") if isinstance(data, dict) else []
+        if not isinstance(events, list):
+            return []
+        out = []
+        for i, e in enumerate(events):
+            if not isinstance(e, dict):
+                continue
+            order = int(e.get("event_order", i + 1))
+            title = str(e.get("title", "")).strip() or f"Sự kiện {order}"
+            desc = str(e.get("description", ""))[:2000]
+            raw_date = str(e.get("raw_date", ""))[:200]
+            etype = str(e.get("event_type", "event")).lower()
+            if etype not in ("event", "flashback", "milestone", "timeskip", "other"):
+                etype = "event"
+            out.append({
+                "event_order": order,
+                "title": title,
+                "description": desc,
+                "raw_date": raw_date,
+                "event_type": etype,
+            })
+        return out
+    except Exception as ex:
+        print(f"extract_timeline_events_from_content error: {ex}")
+        return []
 
 
 def get_file_sample(file_content: str, sample_size: int = 80) -> str:
@@ -1624,7 +2155,7 @@ def analyze_split_strategy(
         return {"split_type": "by_length", "split_value": "2000"}
     sample = get_file_sample(file_content, sample_size=80)
     try:
-        model = getattr(Config, "METADATA_MODEL", None) or "google/gemini-2.5-flash"
+        model = _get_default_tool_model()
         type_hints = {
             "story": "Truyện - tìm quy luật phân cách chương (VD: 'Chương' viết hoa, dấu '***', xuống dòng 2 lần).",
             "character_data": "Dữ liệu nhân vật - tìm quy luật phân cách entity (VD: '##', '---', tên riêng ở đầu dòng).",
@@ -1872,7 +2403,7 @@ class RuleMiningSystem:
         try:
             response = AIService.call_openrouter(
                 messages=messages,
-                model=Config.ROUTER_MODEL,
+                model=_get_default_tool_model(),
                 temperature=0.3,
                 max_tokens=300
             )
@@ -1927,7 +2458,7 @@ class RuleMiningSystem:
         try:
             response = AIService.call_openrouter(
                 messages=messages,
-                model=Config.ROUTER_MODEL,
+                model=_get_default_tool_model(),
                 temperature=0.2,
                 max_tokens=4000,
                 response_format={"type": "json_object"}
@@ -1981,7 +2512,7 @@ class RuleMiningSystem:
         try:
             response = AIService.call_openrouter(
                 messages=messages,
-                model=Config.ROUTER_MODEL,
+                model=_get_default_tool_model(),
                 temperature=0.3,
                 max_tokens=8000
             )

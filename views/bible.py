@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from config import Config, init_services
-from ai_engine import AIService, HybridSearch, suggest_import_category
+from ai_engine import AIService, HybridSearch, suggest_import_category, _get_default_tool_model
 from utils.file_importer import UniversalLoader
 from utils.auth_manager import check_permission, submit_pending_change
 from utils.cache_helpers import get_bible_list_cached, invalidate_cache_and_rerun
@@ -24,8 +24,9 @@ def _entry_has_locked_prefix(entry) -> bool:
 
 
 def render_bible_tab(project_id, persona):
-    """Tab Bible - Cache + fragment search, score formula, inline Importance Bias."""
+    """Tab Bible - Cache + fragment search, score formula, inline Importance Bias. [RULE]/[CHAT] chỉ ở tab Rules/Memory."""
     st.header("📚 Project Bible")
+    st.caption("Nhân vật, địa điểm, lore... Entries [RULE] và [CHAT] chỉ hiện ở tab **Rules** và **Memory**.")
 
     if not project_id:
         st.info("📁 Please select or create a project first")
@@ -37,7 +38,13 @@ def render_bible_tab(project_id, persona):
         st.warning("Không kết nối được dịch vụ.")
         return
     supabase = services["supabase"]
-    bible_data_all = get_bible_list_cached(project_id, st.session_state.get("update_trigger", 0))
+    raw_bible = get_bible_list_cached(project_id, st.session_state.get("update_trigger", 0))
+    # [RULE] và [CHAT] chỉ hiện ở tab Rules và Memory; Bible chỉ hiện các prefix còn lại
+    bible_data_all = [
+        e for e in raw_bible
+        if not (e.get("entity_name") or "").strip().startswith("[RULE]")
+        and not (e.get("entity_name") or "").strip().startswith("[CHAT]")
+    ]
     all_prefixes = set()
     for entry in bible_data_all:
         match = re.match(r"^(\[[^\]]+\])", entry.get("entity_name", "") or "")
@@ -168,9 +175,15 @@ def render_bible_tab(project_id, persona):
 
         if search_term and search_term.strip():
             with st.spinner("Smart search..."):
-                search_results = HybridSearch.smart_search_hybrid_raw_with_scores(
+                raw_results = HybridSearch.smart_search_hybrid_raw_with_scores(
                     search_term.strip(), project_id, top_k=20
                 )
+                # Bible tab không hiện [RULE] / [CHAT] (xem ở tab Rules và Memory)
+                search_results = [
+                    item for item in (raw_results or [])
+                    if not (item.get("entity_name") or "").strip().startswith("[RULE]")
+                    and not (item.get("entity_name") or "").strip().startswith("[CHAT]")
+                ]
             if search_results:
                 for item in search_results:
                     eid = item.get("id")
@@ -415,7 +428,7 @@ def render_bible_tab(project_id, persona):
                         try:
                             response = AIService.call_openrouter(
                                 messages=[{"role": "user", "content": prompt_merge}],
-                                model=Config.ROUTER_MODEL,
+                                model=_get_default_tool_model(),
                                 temperature=0.3,
                                 max_tokens=4000
                             )

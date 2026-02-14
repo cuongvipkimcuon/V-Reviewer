@@ -70,6 +70,8 @@ class Config:
 
     # Default settings
     DEFAULT_MODEL = "anthropic/claude-3.5-haiku"
+    # Model mặc định cho công cụ (Numerical Executor, Data Analyze, Python Executor) — có thể đổi trong Settings
+    DEFAULT_TOOL_MODEL = "deepseek/deepseek-v3.2"
     EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
     ROUTER_MODEL = "deepseek/deepseek-v3.2"
     # Model rẻ cho auto-summary / metadata (Workstation)
@@ -257,6 +259,7 @@ class SessionManager:
                 'project_id': None,
                 'chat_messages': [],
                 'selected_model': Config.DEFAULT_MODEL,
+                'default_ai_model': getattr(Config, 'DEFAULT_TOOL_MODEL', Config.ROUTER_MODEL),
                 'temperature': 0.7,
                 'context_size': 'medium',
                 'persona': 'Writer',
