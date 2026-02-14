@@ -1,6 +1,6 @@
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -38,7 +38,22 @@ def render_bible_tab(project_id, persona):
         st.warning("Không kết nối được dịch vụ.")
         return
     supabase = services["supabase"]
-    raw_bible = get_bible_list_cached(project_id, st.session_state.get("update_trigger", 0))
+
+    # Tự rerun 30s để đón dữ liệu tươi (extract/backfill)
+    @st.fragment(run_every=timedelta(seconds=30))
+    def _bible_auto_refresh():
+        _key = "_bible_last_refresh"
+        if _key not in st.session_state:
+            st.session_state[_key] = time.time()
+        if time.time() - st.session_state[_key] >= 30:
+            st.session_state[_key] = time.time()
+            st.rerun()
+
+    _bible_auto_refresh()
+
+    # Trigger cache: update_trigger (sau add/delete) + tick 30s để mỗi 30s refetch khi fragment rerun
+    _cache_trigger = st.session_state.get("update_trigger", 0) + (int(time.time() // 30) * 10000)
+    raw_bible = get_bible_list_cached(project_id, _cache_trigger)
     # [RULE] và [CHAT] chỉ hiện ở tab Rules và Memory; Bible chỉ hiện các prefix còn lại
     bible_data_all = [
         e for e in raw_bible
