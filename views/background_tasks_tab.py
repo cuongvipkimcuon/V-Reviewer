@@ -23,6 +23,7 @@ def render_background_tasks_tab(project_id):
         return
 
     if st.button("🔄 Refresh", key="bg_tasks_refresh_btn"):
+        st.rerun()
 
     status_filter = st.selectbox(
         "Status",
