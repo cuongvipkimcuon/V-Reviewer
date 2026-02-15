@@ -1,7 +1,15 @@
 # views - UI render functions
 from .sidebar import render_sidebar
 from .dashboard import render_dashboard_tab
-from .chat import render_chat_tab
+
+try:
+    from .chat import render_chat_tab
+except Exception as e:
+    def render_chat_tab(project_id, persona):
+        import streamlit as st
+        st.error("Chat tab failed to load: %s" % (e,))
+    render_chat_tab.__module__ = "views"
+
 from .workstation import render_workstation_tab
 from .bible import render_bible_tab
 from .cost import render_cost_tab
