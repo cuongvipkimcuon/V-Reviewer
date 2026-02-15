@@ -77,6 +77,8 @@ def render_bible_tab(project_id, persona):
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🔄 Kiểm tra mục chưa có embedding", key="bible_check_vec_btn"):
+            invalidate_cache()
+            st.toast("Đã làm mới. Số mục chưa có embedding hiển thị phía trên.")
     with c2:
         if st.button("🔄 Đồng bộ vector (Bible)", key="bible_sync_vec_btn", disabled=(bible_no_vec_count == 0)):
             import threading
