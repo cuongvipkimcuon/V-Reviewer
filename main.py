@@ -42,8 +42,12 @@ st.markdown("""
     [data-testid="stTextInput"] input:focus { box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2); border-color: #7c3aed; }
     .stButton > button { border-radius: 8px; font-weight: 500; transition: opacity 0.2s; }
     .stButton > button:hover { opacity: 0.9; }
-    div[data-testid="stHorizontalBlock"] > label[data-testid="stRadio"] > div { gap: 6px; background: #f8fafc; padding: 8px; border-radius: 10px; flex-wrap: wrap; }
-    div[data-testid="stHorizontalBlock"] > label[data-testid="stRadio"] div[role="radiogroup"] { flex-direction: row; gap: 6px; }
+    /* Tab bar: 2 hàng nút giống tab (nền xám, pill, tab chọn màu tím) */
+    #main-tab-row + div, #sub-tab-row + div { gap: 8px !important; background: #f1f5f9 !important; padding: 10px !important; border-radius: 10px !important; margin-bottom: 12px !important; flex-wrap: wrap !important; }
+    #main-tab-row + div .stButton > button, #sub-tab-row + div .stButton > button { border-radius: 8px !important; font-weight: 500 !important; transition: all 0.2s !important; }
+    #main-tab-row + div .stButton > button[kind="primary"], #sub-tab-row + div .stButton > button[kind="primary"] { background: linear-gradient(135deg, #6d28d9 0%, #7c3aed 100%) !important; color: white !important; border: none !important; box-shadow: 0 1px 3px rgba(109,40,217,0.3); }
+    #main-tab-row + div .stButton > button[kind="secondary"], #sub-tab-row + div .stButton > button[kind="secondary"] { background: white !important; color: #475569 !important; border: 1px solid #e2e8f0 !important; }
+    #main-tab-row + div .stButton > button[kind="secondary"]:hover, #sub-tab-row + div .stButton > button[kind="secondary"]:hover { background: #f8fafc !important; border-color: #c4b5fd !important; color: #6d28d9 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -156,36 +160,40 @@ def main():
             budget = get_user_budget_cached(st.session_state.user.id, _trigger)
             st.metric("Credits", f"${budget.get('remaining_credits', 0):.2f}")
 
-    # Chỉ render 1 tab đang chọn (main + sub) → giảm từ ~20 xuống 1 render mỗi run
+    # Tab đẹp: 2 hàng nút (main + sub), chỉ render 1 tab đang chọn
     main_labels = ["📂 Workspace", "📚 Knowledge", "💬 Chat", "⚙️ Admin"]
     main_keys = ["workspace", "knowledge", "chat", "admin"]
-    st.session_state.setdefault("main_tab_key", "workspace")
-    main_idx = st.radio(
-        "Tab",
-        range(len(main_labels)),
-        format_func=lambda i: main_labels[i],
-        key="main_tab_radio",
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-    main_tab_key = main_keys[max(0, min(int(main_idx) if main_idx is not None else 0, len(main_keys) - 1))]
-    st.session_state["main_tab_key"] = main_tab_key
+    st.session_state.setdefault("main_tab_idx", 0)
+    main_idx = max(0, min(st.session_state["main_tab_idx"], len(main_keys) - 1))
 
+    st.markdown('<div id="main-tab-row"></div>', unsafe_allow_html=True)
+    cols_main = st.columns(len(main_labels))
+    for i, (col, label) in enumerate(zip(cols_main, main_labels)):
+        with col:
+            if st.button(label, key="main_tab_%d" % i, type="primary" if main_idx == i else "secondary", use_container_width=True):
+                st.session_state["main_tab_idx"] = i
+                if "sub_tab_idx_%s" % main_keys[i] not in st.session_state:
+                    st.session_state["sub_tab_idx_%s" % main_keys[i]] = 0
+                st.rerun()
+
+    main_tab_key = main_keys[main_idx]
     subs = TAB_STRUCTURE.get(main_tab_key, [])
     if not subs:
         st.info("Chọn tab ở trên.")
     else:
         sub_labels = [s[1] for s in subs]
-        radio_key = "sub_%s" % main_tab_key
-        sub_idx = st.radio(
-            "Sub",
-            range(len(sub_labels)),
-            format_func=lambda i: sub_labels[i] if i < len(sub_labels) else "",
-            key=radio_key,
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-        sub_idx = max(0, min(int(sub_idx) if sub_idx is not None else 0, len(subs) - 1))
+        sub_key = "sub_tab_idx_%s" % main_tab_key
+        st.session_state.setdefault(sub_key, 0)
+        sub_idx = max(0, min(st.session_state[sub_key], len(subs) - 1))
+
+        st.markdown('<div id="sub-tab-row"></div>', unsafe_allow_html=True)
+        cols_sub = st.columns([1] * len(sub_labels))
+        for i, (col, label) in enumerate(zip(cols_sub, sub_labels)):
+            with col:
+                if st.button(label, key="sub_%s_%d" % (main_tab_key, i), type="primary" if sub_idx == i else "secondary", use_container_width=True):
+                    st.session_state[sub_key] = i
+                    st.rerun()
+
         sub_id, _, fn_name, needs_persona = subs[sub_idx]
         render_fn = _get_render_fn(fn_name)
         if render_fn:
