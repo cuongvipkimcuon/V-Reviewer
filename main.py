@@ -42,18 +42,23 @@ st.markdown("""
     [data-testid="stTextInput"] input:focus { box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2); border-color: #7c3aed; }
     .stButton > button { border-radius: 8px; font-weight: 500; transition: opacity 0.2s; }
     .stButton > button:hover { opacity: 0.9; }
-    /* Tab chính: to, nổi bật, tối đa 4/hàng */
-    #main-tab-row + div { gap: 10px !important; background: linear-gradient(135deg, #4c1d95 0%, #5b21b6 0.5%, #6d28d9 100%) !important; padding: 12px 14px !important; border-radius: 12px !important; margin-bottom: 20px !important; flex-wrap: wrap !important; box-shadow: 0 2px 8px rgba(109,40,217,0.25); }
-    #main-tab-row + div .stButton > button { border-radius: 10px !important; font-weight: 600 !important; font-size: 0.95rem !important; transition: all 0.2s !important; padding: 0.5rem 1rem !important; }
-    #main-tab-row + div .stButton > button[kind="primary"] { background: white !important; color: #5b21b6 !important; border: none !important; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
-    #main-tab-row + div .stButton > button[kind="secondary"] { background: rgba(255,255,255,0.2) !important; color: rgba(255,255,255,0.95) !important; border: 1px solid rgba(255,255,255,0.4) !important; }
-    #main-tab-row + div .stButton > button[kind="secondary"]:hover { background: rgba(255,255,255,0.35) !important; color: white !important; border-color: rgba(255,255,255,0.6) !important; }
-    /* Tab phụ: nhỏ hơn, tối đa 4/hàng, xuống hàng nếu dư; mỗi hàng cùng style */
-    .sub-tab-row-marker + div { gap: 8px !important; background: #f1f5f9 !important; padding: 10px !important; border-radius: 10px !important; margin-bottom: 8px !important; flex-wrap: wrap !important; }
+    /* Khung tab chính: ô trên = ghi chú, ô dưới = nút (nối liền) */
+    .tab-main-frame { border: 2px solid #5b21b6; border-bottom: none; border-radius: 14px 14px 0 0; padding: 10px 16px 8px; background: linear-gradient(135deg, #3b0764 0%, #4c1d95 50%, #6d28d9 100%); box-shadow: 0 4px 14px rgba(91,33,182,0.25); }
+    .tab-main-frame .tab-label { color: rgba(255,255,255,0.92); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+    #main-tab-row + div { gap: 12px !important; padding: 12px 16px 14px !important; flex-wrap: wrap !important; border: 2px solid #5b21b6; border-top: none !important; border-radius: 0 0 14px 14px; background: linear-gradient(180deg, rgba(109,40,217,0.12) 0%, rgba(91,33,182,0.08) 100%); margin-bottom: 22px !important; }
+    #main-tab-row + div .stButton > button { border-radius: 12px !important; font-weight: 700 !important; font-size: 1.12rem !important; transition: all 0.2s !important; padding: 0.7rem 1.4rem !important; min-height: 48px !important; }
+    #main-tab-row + div .stButton > button[kind="primary"] { background: white !important; color: #5b21b6 !important; border: none !important; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
+    #main-tab-row + div .stButton > button[kind="secondary"] { background: rgba(255,255,255,0.18) !important; color: rgba(255,255,255,0.98) !important; border: 2px solid rgba(255,255,255,0.5) !important; }
+    #main-tab-row + div .stButton > button[kind="secondary"]:hover { background: rgba(255,255,255,0.3) !important; color: white !important; border-color: rgba(255,255,255,0.7) !important; }
+    /* Khung tab phụ: ô ghi chú riêng */
+    .tab-sub-frame { border: 1px solid #cbd5e1; border-radius: 12px; padding: 8px 14px; margin-bottom: 8px; background: #f1f5f9; }
+    .tab-sub-frame .tab-label { color: #64748b; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; }
+    /* Tab phụ: nhỏ hơn, màu xanh slate, tối đa 4/hàng */
+    .sub-tab-row-marker + div { gap: 8px !important; padding: 10px 14px !important; margin-bottom: 8px !important; flex-wrap: wrap !important; background: #f8fafc !important; border-radius: 10px !important; border: 1px solid #e2e8f0 !important; }
     .sub-tab-row-marker + div .stButton > button { border-radius: 8px !important; font-weight: 500 !important; font-size: 0.875rem !important; transition: all 0.2s !important; }
-    .sub-tab-row-marker + div .stButton > button[kind="primary"] { background: linear-gradient(135deg, #6d28d9 0%, #7c3aed 100%) !important; color: white !important; border: none !important; box-shadow: 0 1px 3px rgba(109,40,217,0.3); }
+    .sub-tab-row-marker + div .stButton > button[kind="primary"] { background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%) !important; color: white !important; border: none !important; box-shadow: 0 1px 3px rgba(13,148,136,0.35); }
     .sub-tab-row-marker + div .stButton > button[kind="secondary"] { background: white !important; color: #475569 !important; border: 1px solid #e2e8f0 !important; }
-    .sub-tab-row-marker + div .stButton > button[kind="secondary"]:hover { background: #f8fafc !important; border-color: #c4b5fd !important; color: #6d28d9 !important; }
+    .sub-tab-row-marker + div .stButton > button[kind="secondary"]:hover { background: #f1f5f9 !important; border-color: #0d9488 !important; color: #0f766e !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -172,7 +177,10 @@ def main():
     st.session_state.setdefault("main_tab_idx", 0)
     main_idx = max(0, min(st.session_state["main_tab_idx"], len(main_keys) - 1))
 
-    st.markdown('<div id="main-tab-row"></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="tab-main-frame"><span class="tab-label">Tab chính — Chọn nhóm</span></div><div id="main-tab-row"></div>',
+        unsafe_allow_html=True
+    )
     cols_main = st.columns(len(main_labels))
     for i, (col, label) in enumerate(zip(cols_main, main_labels)):
         with col:
@@ -192,7 +200,10 @@ def main():
         st.session_state.setdefault(sub_key, 0)
         sub_idx = max(0, min(st.session_state[sub_key], len(subs) - 1))
 
-        st.markdown('<div id="sub-tab-row"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="tab-sub-frame"><span class="tab-label">Tab phụ — Chọn tính năng</span></div><div id="sub-tab-row"></div>',
+            unsafe_allow_html=True
+        )
         TABS_PER_ROW = 4
         for row_start in range(0, len(sub_labels), TABS_PER_ROW):
             st.markdown('<div class="sub-tab-row-marker"></div>', unsafe_allow_html=True)
