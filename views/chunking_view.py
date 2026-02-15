@@ -45,6 +45,7 @@ def render_chunking_tab(project_id):
     can_delete = check_permission(str(user_id or ""), user_email or "", project_id, "delete")
 
     if st.button("🔄 Refresh", key="chunking_refresh_btn"):
+        st.rerun()
 
     # Kiểm tra chunk chưa có embedding + Đồng bộ vector (chỉ khi user bấm)
     try:
@@ -59,6 +60,7 @@ def render_chunking_tab(project_id):
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🔄 Kiểm tra chunk chưa có embedding", key="chunking_check_vec_btn"):
+            st.rerun()
     with c2:
         if st.button("🔄 Đồng bộ vector (Chunks)", key="chunking_sync_vec_btn", disabled=(chunks_no_vec == 0)):
             import threading

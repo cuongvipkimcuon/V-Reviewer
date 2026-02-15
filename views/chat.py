@@ -188,6 +188,7 @@ def _start_data_operation_background(
             ).start()
         st.toast("Started in background. Check Background Jobs tab for status.")
         if rerun_after:
+            st.rerun()
     except Exception as e:
         st.error(f"Lỗi khi bắt đầu thao tác: {e}")
 
