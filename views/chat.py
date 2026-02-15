@@ -1,5 +1,5 @@
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import streamlit as st
 
@@ -433,7 +433,6 @@ def render_chat_tab(project_id, persona, chat_mode=None):
         else:
             st.session_state["history_depth"] = st.session_state.get("history_depth", 5)
 
-    @st.fragment(run_every=timedelta(seconds=10))
     def _chat_messages_fragment():
         if is_v_home:
             visible_msgs = _v_home_load_messages(user_id)

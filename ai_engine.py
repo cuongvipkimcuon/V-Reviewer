@@ -546,6 +546,30 @@ class ContextManager:
                 print(f"Reverse lookup error: {e}")
                 pass
 
+            # search_bible mở rộng: khi user hỏi về timeline/sự kiện thì bổ sung dữ liệu timeline vào context
+            _query_lower = (router_result.get("rewritten_query") or "").lower()
+            _timeline_keywords = ("timeline", "sự kiện", "sự kiện nào", "mốc thời gian", "thứ tự", "diễn ra trước", "diễn ra sau", "sự kiện diễn ra")
+            if intent == "search_bible" and any(k in _query_lower for k in _timeline_keywords):
+                events = get_timeline_events(
+                    project_id,
+                    limit=20,
+                    chapter_range=range_bounds_bible,
+                    arc_id=current_arc_id,
+                )
+                if events:
+                    lines = ["[TIMELINE EVENTS - Thứ tự sự kiện / mốc thời gian]"]
+                    for e in events:
+                        order = e.get("event_order", 0)
+                        title = e.get("title", "")
+                        desc = (e.get("description") or "")[:400]
+                        raw_date = e.get("raw_date", "")
+                        etype = e.get("event_type", "event")
+                        lines.append(f"- #{order} [{etype}] {title}" + (f" (Thời điểm: {raw_date})" if raw_date else "") + f"\n  {desc}")
+                    block = "\n".join(lines)
+                    context_parts.append(block)
+                    total_tokens += AIService.estimate_tokens(block)
+                    sources.append("📅 Timeline Events")
+
         if intent == "mixed_context" and target_files:
             full_text, source_names = ContextManager.load_full_content(
                 target_files, project_id,
